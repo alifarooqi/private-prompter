@@ -8,7 +8,11 @@
 #
 # Requires: cmake, a C/C++ toolchain, ninja (or make), git.
 #
-# Usage: ./scripts/build-sidecar.sh [--release-dir <dir>]
+# Usage: ./scripts/build-sidecar.sh [native|all]
+#
+#   native  (default) — build only the host arch (arm64 on M-series, x86_64
+#                       on Intel). Fast; what you need for local dev.
+#   all               — cross-compile both arm64 and x86_64. Used by CI.
 #
 set -euo pipefail
 
@@ -16,6 +20,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLAMA_SRC_DIR="${LLAMA_SRC_DIR:-$REPO_ROOT/.build/llama.cpp}"
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggerganov/llama.cpp.git}"
 LLAMA_BRANCH="${LLAMA_BRANCH:-master}"
+
+MODE="${1:-native}"
 
 OUT_DIR="$REPO_ROOT/src-tauri/binaries"
 mkdir -p "$OUT_DIR"
@@ -39,6 +45,7 @@ build_for() {
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES="$arch" \
+    -DGGML_NATIVE=OFF \
     -DLLAMA_BUILD_SERVER=ON \
     -DLLAMA_BUILD_TESTS=OFF \
     -DLLAMA_BUILD_EXAMPLES=OFF \
@@ -54,8 +61,25 @@ build_for() {
   echo "    wrote $OUT_DIR/llama-server-${cargo_target}"
 }
 
-build_for arm64    aarch64-apple-darwin
-build_for x86_64   x86_64-apple-darwin
+NATIVE_ARCH="$(uname -m)"
+case "$NATIVE_ARCH" in
+  arm64)
+    build_for arm64    aarch64-apple-darwin
+    if [ "$MODE" = "all" ]; then
+      build_for x86_64 x86_64-apple-darwin
+    fi
+    ;;
+  x86_64)
+    build_for x86_64   x86_64-apple-darwin
+    if [ "$MODE" = "all" ]; then
+      build_for arm64  aarch64-apple-darwin
+    fi
+    ;;
+  *)
+    echo "unknown native arch: $NATIVE_ARCH" >&2
+    exit 1
+    ;;
+esac
 
 echo "==> Done. Sidecar binaries:"
-ls -lh "$OUT_DIR"/llama-server-*
+ls -lh "$OUT_DIR"/llama-server-* 2>/dev/null || echo "(none)"
