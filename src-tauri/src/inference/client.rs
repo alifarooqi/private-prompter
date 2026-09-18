@@ -104,18 +104,28 @@ where
 
     let response = client.post(&url).json(&req).send().await?;
     if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        tracing::error!(
+            "inference: /completion returned {status} body={}",
+            body.chars().take(500).collect::<String>()
+        );
         return Err(InferenceError::NotRunning);
     }
+    tracing::info!("inference: streaming started for prompt ({} chars)", req.prompt.len());
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut full = String::new();
+    let mut line_count: u32 = 0;
+    let mut raw_bytes: u64 = 0;
 
     while let Some(chunk) = stream.next().await {
         if cancel.is_cancelled() {
             return Err(InferenceError::NotRunning);
         }
         let chunk = chunk?;
+        raw_bytes += chunk.len() as u64;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         // llama-server's /completion stream emits one JSON object per line,
@@ -130,6 +140,7 @@ where
             if trimmed.is_empty() {
                 continue;
             }
+            line_count += 1;
             match serde_json::from_str::<LlamaStreamLine>(trimmed) {
                 Ok(parsed) => {
                     let content = parsed.content;
@@ -144,16 +155,33 @@ where
                         let _ = app.emit(STREAM_EVENT, &cc);
                     }
                     if stop {
+                        tracing::info!(
+                            "inference: stream done, {} lines, {} bytes, {} chars",
+                            line_count,
+                            raw_bytes,
+                            full.chars().count()
+                        );
                         return Ok(full);
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("malformed stream line: {err} (line={trimmed:?})");
+                    tracing::warn!(
+                        "inference: malformed stream line ({}): {} (line={:?})",
+                        line_count,
+                        err,
+                        &trimmed[..trimmed.len().min(200)]
+                    );
                 }
             }
         }
     }
 
+    tracing::warn!(
+        "inference: stream ended without stop token ({} lines, {} bytes, {} chars)",
+        line_count,
+        raw_bytes,
+        full.chars().count()
+    );
     Ok(full)
 }
 

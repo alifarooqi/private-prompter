@@ -1,34 +1,49 @@
 //! Filesystem layout for downloaded models and templates.
 //!
-//! Centralized so the rest of the app doesn't hard-code paths. On macOS this
-//! resolves to `~/Library/Application Support/com.alifarooqi.privateprompter/`.
+//! Centralized so the rest of the app doesn't hard-code paths. The data dir
+//! is resolved at app boot via Tauri's `Manager::path().app_data_dir()`,
+//! which honors the bundle ID directly:
+//!
+//!     macOS:  ~/Library/Application Support/<bundle-identifier>/
+//!
+//! We can't compute that at module load (it requires an `AppHandle`), so
+//! `set_data_dir()` is called from `setup` in lib.rs and the rest of the
+//! code reads the resolved path through `data_dir()`. Tests that don't go
+//! through lib.rs get a fallback to `$TMP/<bundle-id>`.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use directories::ProjectDirs;
+const BUNDLE_ID: &str = "com.alifarooqi.privateprompter";
 
-const APP_DIR: &str = "PrivatePrompter";
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-pub fn app_data_dir() -> PathBuf {
-    ProjectDirs::from("com", "alifarooqi", APP_DIR)
-        .map(|p| p.data_dir().to_path_buf())
-        .unwrap_or_else(|| {
-            // Fallback for headless/test environments where $HOME may not
-            // point at a writable place. Use a temp dir so things still work.
-            std::env::temp_dir().join(APP_DIR)
-        })
+/// Set the resolved data dir. Called once from `lib.rs` setup.
+pub fn set_data_dir(path: PathBuf) {
+    DATA_DIR
+        .set(path)
+        .expect("set_data_dir called more than once");
+}
+
+/// Returns the resolved data dir, or a temp fallback for unit tests that
+/// don't go through lib.rs.
+pub fn data_dir() -> PathBuf {
+    DATA_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join(BUNDLE_ID))
 }
 
 pub fn models_dir() -> PathBuf {
-    app_data_dir().join("models")
+    data_dir().join("models")
 }
 
 pub fn templates_dir() -> PathBuf {
-    app_data_dir().join("templates")
+    data_dir().join("templates")
 }
 
 pub fn logs_dir() -> PathBuf {
-    app_data_dir().join("logs")
+    data_dir().join("logs")
 }
 
 pub fn model_path(model_id: &str, file_name: &str) -> PathBuf {
@@ -42,10 +57,7 @@ pub fn ensure_models_dir(model_id: &str) -> std::io::Result<PathBuf> {
 }
 
 pub fn ensure_app_data_dir() -> std::io::Result<&'static Path> {
-    // ProjectDirs is cheap to query repeatedly; just resolve each call.
-    // For ergonomics we return a static Path by leaking the PathBuf; this is
-    // fine because the dir never moves and we only call it on app start.
-    let dir = app_data_dir();
+    let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
     Ok(Box::leak(dir.into_boxed_path()))
 }

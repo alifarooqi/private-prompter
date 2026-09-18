@@ -8,11 +8,14 @@ import {
   type ModelSummary,
   type ServerStatus,
   formatBytes,
+  inferenceHealth,
+  inferenceStatus,
   listModels,
   onDownloadProgress,
   recommendedModelId,
   startInference,
   startModelDownload,
+  stopInference,
 } from "../lib/model";
 import { BUILTIN_TEMPLATES } from "../lib/templates";
 
@@ -214,6 +217,9 @@ function ModelTab() {
   >({});
   const [server, setServer] = useState<ServerStatus | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
+    "idle",
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -221,13 +227,16 @@ function ModelTab() {
 
     async function load() {
       try {
-        const [list, recommended] = await Promise.all([
+        const [list, recommended, initialStatus, health] = await Promise.all([
           listModels(),
           recommendedModelId(),
+          inferenceStatus(),
+          inferenceHealth(),
         ]);
         if (!cancelled) {
           setModels(list);
           setRecommendedId(recommended);
+          setServer({ ...initialStatus, loading: health?.status === "loading" });
         }
         unlisten = await onDownloadProgress((p) => {
           setProgressById((prev) => ({ ...prev, [p.modelId]: p }));
@@ -242,9 +251,30 @@ function ModelTab() {
 
     void load();
 
+    // Poll /health while a server is up so the UI stays in sync with
+    // crashes and "model loading" → "ready" transitions.
+    const poll = window.setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const [status, health] = await Promise.all([
+          inferenceStatus(),
+          inferenceHealth(),
+        ]);
+        if (!cancelled) {
+          setServer({
+            ...status,
+            loading: status.running && health?.status === "loading",
+          });
+        }
+      } catch (err) {
+        console.error("inference status poll failed", err);
+      }
+    }, 3000);
+
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
+      window.clearInterval(poll);
     };
   }, []);
 
@@ -260,11 +290,27 @@ function ModelTab() {
   }
 
   async function onStartServer() {
+    setServerBusy("starting");
     try {
       const status = await startInference();
-      setServer(status);
+      setServer({ ...status, loading: true });
     } catch (err) {
       console.error("start inference failed", err);
+    } finally {
+      setServerBusy("idle");
+    }
+  }
+
+  async function onStopServer() {
+    setServerBusy("stopping");
+    try {
+      await stopInference();
+      const status = await inferenceStatus();
+      setServer({ ...status, loading: false });
+    } catch (err) {
+      console.error("stop inference failed", err);
+    } finally {
+      setServerBusy("idle");
     }
   }
 
@@ -359,7 +405,9 @@ function ModelTab() {
           <div className="text-sm">
             <div className="font-medium">
               {server?.running
-                ? `Running on ${server.host}:${server.port}`
+                ? server.loading
+                  ? `Loading model on ${server.host}:${server.port}…`
+                  : `Running on ${server.host}:${server.port}`
                 : "Not running"}
             </div>
             <div className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -367,13 +415,23 @@ function ModelTab() {
               rewrite. You can also start it manually here.
             </div>
           </div>
-          <button
-            onClick={onStartServer}
-            disabled={!models.some((m) => m.downloaded)}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Start server
-          </button>
+          {server?.running ? (
+            <button
+              onClick={onStopServer}
+              disabled={serverBusy !== "idle"}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              {serverBusy === "stopping" ? "Stopping…" : "Stop server"}
+            </button>
+          ) : (
+            <button
+              onClick={onStartServer}
+              disabled={serverBusy !== "idle" || !models.some((m) => m.downloaded)}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              {serverBusy === "starting" ? "Starting…" : "Start server"}
+            </button>
+          )}
         </div>
       </section>
     </div>

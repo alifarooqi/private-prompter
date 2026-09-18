@@ -6,7 +6,7 @@
 //! and the stack is capped at `MAX_ENTRIES`.
 //!
 //! Persistence is best-effort: on app start we re-read the on-disk stack
-//! from `app_data_dir()/undo.json`. Writes are atomic (write+rename).
+//! from `data_dir()/undo.json`. Writes are atomic (write+rename).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -109,7 +109,7 @@ pub async fn save(app: &AppHandle, entries: &[UndoEntry]) {
 }
 
 fn undo_path(_app: &AppHandle) -> PathBuf {
-    store_paths::app_data_dir().join(FILE_NAME)
+    store_paths::data_dir().join(FILE_NAME)
 }
 
 /// Helper used by the notification flow to format the "Undo available for

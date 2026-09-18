@@ -30,6 +30,11 @@ export interface ServerStatus {
   loading: boolean;
 }
 
+export interface InferenceHealth {
+  status: "ok" | "no_model" | "loading";
+  model_id: string | null;
+}
+
 export async function listModels(): Promise<ModelSummary[]> {
   return invoke<ModelSummary[]>("list_models");
 }
@@ -60,6 +65,14 @@ export async function stopInference(): Promise<void> {
 
 export async function inferenceStatus(): Promise<ServerStatus> {
   return invoke<ServerStatus>("inference_status");
+}
+
+/**
+ * Quick liveness check against the llama-server `/health` endpoint.
+ * Returns null when we don't have a base URL (server isn't started yet).
+ */
+export async function inferenceHealth(): Promise<InferenceHealth | null> {
+  return invoke<InferenceHealth | null>("inference_health");
 }
 
 export function onDownloadProgress(

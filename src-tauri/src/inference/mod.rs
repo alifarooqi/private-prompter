@@ -130,6 +130,53 @@ pub mod commands {
         })
     }
 
+    /// Quick `/health` probe against the running sidecar. Returns null when
+    /// the server isn't started yet (so the UI can show the "Start server"
+    /// button instead of trying to poll a non-existent endpoint).
+    #[tauri::command]
+    pub async fn inference_health(
+        state: State<'_, SharedInferenceState>,
+    ) -> Result<Option<InferenceHealthPayload>, String> {
+        let base_url = {
+            let guard = state.inner.lock().await;
+            guard.as_ref().map(|s| s.base_url().to_string())
+        };
+        let Some(url) = base_url else {
+            return Ok(None);
+        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .get(format!("{url}/health"))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Ok(Some(InferenceHealthPayload {
+                status: "loading",
+                model_id: None,
+            }));
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let status = body["status"].as_str().unwrap_or("unknown");
+        Ok(Some(InferenceHealthPayload {
+            status: match status {
+                "ok" => "ok",
+                "no slot loaded" | "no model loaded" => "no_model",
+                _ => "loading",
+            },
+            model_id: None,
+        }))
+    }
+
+    #[derive(serde::Serialize, Clone)]
+    pub struct InferenceHealthPayload {
+        pub status: &'static str,
+        pub model_id: Option<String>,
+    }
+
     fn gguf_path(model_id: &str, file: &str) -> Option<PathBuf> {
         let p = store_paths::model_path(model_id, file);
         if p.exists() { Some(p) } else { None }

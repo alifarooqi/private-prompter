@@ -61,10 +61,24 @@ pub fn run() {
             inference::commands::start_inference,
             inference::commands::stop_inference,
             inference::commands::inference_status,
+            inference::commands::inference_health,
         ])
         .setup(move |app| {
-            if let Err(err) = model::store::ensure_app_data_dir() {
-                tracing::warn!("failed to create app data dir: {err}");
+            // Resolve the canonical data dir via Tauri (which uses the
+            // bundle ID on macOS: ~/Library/Application Support/<bundle-id>/)
+            // and stash it in a OnceLock so the rest of the app can read it
+            // without needing an AppHandle.
+            match app.path().app_data_dir() {
+                Ok(path) => {
+                    if let Err(err) = std::fs::create_dir_all(&path) {
+                        tracing::warn!("failed to create app data dir: {err}");
+                    }
+                    model::store::set_data_dir(path);
+                }
+                Err(err) => {
+                    tracing::warn!("app_data_dir unavailable, using temp fallback: {err}");
+                    model::store::set_data_dir(std::env::temp_dir().join("com.alifarooqi.privateprompter"));
+                }
             }
             tray::install(app.handle())?;
 
