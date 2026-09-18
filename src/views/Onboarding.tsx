@@ -20,11 +20,15 @@ interface Props {
 export function Onboarding({ onComplete }: Props) {
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
+  const [hasPrompted, setHasPrompted] = useState(false);
 
   async function recheck() {
     setBusy(true);
     setDetail(null);
-    const status = await checkAccessibilityPermission();
+    // First call prompts the user via the system dialog. Subsequent calls
+    // (once they hit Recheck again) are silent.
+    const status = await checkAccessibilityPermission(!hasPrompted);
+    setHasPrompted(true);
     setDetail(status.detail);
     setBusy(false);
     if (status.granted) onComplete();

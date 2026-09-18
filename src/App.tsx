@@ -21,7 +21,7 @@ export default function App() {
   }, []);
 
   async function refresh() {
-    const status = await checkAccessibilityPermission();
+    const status = await checkAccessibilityPermission(false);
     setView(status.granted ? "settings" : "onboarding");
   }
 

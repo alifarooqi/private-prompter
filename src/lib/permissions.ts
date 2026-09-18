@@ -12,8 +12,16 @@ export interface PermissionStatus {
   detail: string | null;
 }
 
-export async function checkAccessibilityPermission(): Promise<PermissionStatus> {
-  return invoke<PermissionStatus>("check_accessibility_permission");
+/**
+ * Probe whether macOS Accessibility permission is granted to our process.
+ *
+ * Pass `prompt = true` on the first call to make macOS show the system
+ * permission dialog. Subsequent calls pass `false` to avoid re-prompting.
+ */
+export async function checkAccessibilityPermission(
+  prompt: boolean,
+): Promise<PermissionStatus> {
+  return invoke<PermissionStatus>("check_accessibility_permission", { prompt });
 }
 
 export async function openAccessibilitySettings(): Promise<void> {

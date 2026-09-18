@@ -1,65 +1,63 @@
 //! macOS permission checks.
 //!
-//! `check_accessibility_permission` is called by the onboarding view (and the
-//! "Recheck" button in Settings → Permissions). We probe Accessibility by
-//! asking System Events for the name of the frontmost process — a non-trivial
-//! Apple Event that returns an error if Accessibility hasn't been granted.
+//! `check_accessibility_permission` calls `AXIsProcessTrustedWithOptions` —
+//! the canonical way to ask whether *our own process* has the Accessibility
+//! permission. We pass `.prompt = true` on the first call so macOS shows the
+//! system permission dialog; subsequent calls are silent.
 //!
-//! `open_accessibility_settings` opens System Settings to the Accessibility
-//! pane so the user can grant the permission without hunting through menus.
+//! The earlier osascript-based probe was wrong: it asked whether **System
+//! Events** was trusted (always true) rather than whether we were. That led
+//! to a Settings UI that said "Granted" while the underlying process had no
+//! permission — and calling `enigo::key()` from that state crashed the app
+//! via a CoreFoundation SIGSEGV. This implementation fixes both.
 
+use objc2::ffi::NSInteger;
+use objc2::runtime::{AnyClass, AnyObject, Bool};
+use objc2::{msg_send, ClassType};
 use serde::Serialize;
+use std::ffi::c_void;
+use std::ptr::null;
 
 #[derive(Serialize)]
 pub struct PermissionStatus {
     pub granted: bool,
-    /// Best-effort explanation when `granted` is false. Useful for the UI.
     pub detail: Option<String>,
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+#[link(name = "Foundation", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrustedWithOptions(options: *const AnyObject) -> Bool;
 }
 
 /// Returns whether macOS Accessibility permission is currently granted to us.
 ///
-/// We shell out to `osascript` because `osascript` calls go through the same
-/// permission gate the user is granting us; if Accessibility is denied the
-/// process returns a non-zero status. We avoid linking `objc2` directly here
-/// to keep the dependency surface small for Phase 1.
+/// If `prompt` is true and we're not yet trusted, the system shows the
+/// permission dialog. The user can still deny — we surface that as
+/// `granted = false`.
 #[tauri::command]
-pub fn check_accessibility_permission() -> PermissionStatus {
-    let probe = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            "tell application \"System Events\" to return name of first application process whose frontmost is true",
-        ])
-        .output();
-
-    match probe {
-        Ok(out) if out.status.success() => PermissionStatus {
+pub fn check_accessibility_permission(prompt: bool) -> PermissionStatus {
+    match is_process_trusted(prompt) {
+        Ok(true) => PermissionStatus {
             granted: true,
             detail: None,
         },
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            PermissionStatus {
-                granted: false,
-                detail: Some(if stderr.is_empty() {
-                    "Accessibility permission is required.".to_string()
-                } else {
-                    stderr
-                }),
-            }
-        }
+        Ok(false) => PermissionStatus {
+            granted: false,
+            detail: Some(
+                "PrivatePrompter is not in System Settings → Privacy & Security → Accessibility. \
+                 Grant it and click Recheck."
+                    .to_string(),
+            ),
+        },
         Err(err) => PermissionStatus {
             granted: false,
-            detail: Some(format!("Failed to probe Accessibility: {err}")),
+            detail: Some(format!("Accessibility probe failed: {err}")),
         },
     }
 }
 
 /// Opens System Settings → Privacy & Security → Accessibility.
-///
-/// Uses the `x-apple.systempreferences:` URL scheme, which opens the right
-/// pane directly on macOS 13+. On older macOS versions this falls through to
-/// the generic System Settings window — still better than nothing.
 #[tauri::command]
 pub fn open_accessibility_settings() -> Result<(), String> {
     std::process::Command::new("open")
@@ -69,12 +67,64 @@ pub fn open_accessibility_settings() -> Result<(), String> {
     Ok(())
 }
 
+/// Public re-export of `is_process_trusted` for use by the hotkey handler,
+/// which needs to bail out before calling enigo when accessibility isn't
+/// granted.
+pub fn is_accessibility_trusted(prompt: bool) -> Result<bool, String> {
+    is_process_trusted(prompt)
+}
+
+fn is_process_trusted(prompt: bool) -> Result<bool, String> {
+    // Build an NSDictionary { "AXTrustedCheckOptionPrompt" = @YES } and pass
+    // it to AXIsProcessTrustedWithOptions. We go through the Objective-C
+    // runtime directly so we don't need to pull in `objc2-foundation`.
+    unsafe {
+        let ns_string_class = AnyClass::get("NSString").ok_or("NSString class not found")?;
+        let ns_number_class = AnyClass::get("NSNumber").ok_or("NSNumber class not found")?;
+        let ns_dict_class = AnyClass::get("NSDictionary").ok_or("NSDictionary class not found")?;
+        let ns_pool_class = AnyClass::get("NSAutoreleasePool").ok_or("NSAutoreleasePool class not found")?;
+
+        let pool: *mut AnyObject = msg_send![ns_pool_class, new];
+
+        let dict: *mut AnyObject = if prompt {
+            let key_nsstring: *mut AnyObject = msg_send![
+                ns_string_class,
+                stringWithUTF8String: b"AXTrustedCheckOptionPrompt\0".as_ptr()
+            ];
+            let true_number: *mut AnyObject = msg_send![ns_number_class, numberWithBool: true];
+            let objects: [*const AnyObject; 2] = [true_number as *const AnyObject, std::ptr::null()];
+            let keys: [*const AnyObject; 2] = [key_nsstring as *const AnyObject, std::ptr::null()];
+            msg_send![
+                ns_dict_class,
+                dictionaryWithObjects: objects.as_ptr()
+                forKeys: keys.as_ptr()
+                count: 1
+            ]
+        } else {
+            std::ptr::null_mut()
+        };
+
+        let trusted: Bool = AXIsProcessTrustedWithOptions(dict as *const AnyObject);
+
+        let _: () = msg_send![pool, drain];
+
+        Ok(trusted.as_bool())
+    }
+}
+
+// Quiet the unused-import warning for `NSInteger` / `c_void` / `null` —
+// they're here to keep the file's intent obvious for future readers who may
+// add new FFI calls.
+#[allow(dead_code)]
+type _Unused = (NSInteger, *const c_void, *const AnyObject, Option<extern "C" fn()>);
+const _UNUSED_NULL: *const c_void = null();
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn status_serializes_with_grandred_field() {
+    fn status_serializes_with_granted_field() {
         let s = PermissionStatus {
             granted: true,
             detail: None,

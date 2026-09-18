@@ -45,5 +45,14 @@
     "macOS": {
       "minimumSystemVersion": "11.0"
     }
+  },
+  "plugins": {
+    "updater": {
+      "_comment": "Generate a real key with `npm run tauri signer generate` before tagging a release. The current value is a placeholder so the plugin initializes; signature verification will fail until replaced.",
+      "endpoints": [
+        "https://github.com/<owner>/private-prompter/releases/latest/download/latest.json"
+      ],
+      "pubkey": "PLACEHOLDER_REPLACE_WITH_OUTPUT_OF_tauri_signer_generate"
+    }
   }
 }

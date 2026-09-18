@@ -34,13 +34,15 @@ export function Settings({ onRevoked }: Props) {
     null,
   );
   const [permissionDetail, setPermissionDetail] = useState<string | null>(null);
+  const [hasPrompted, setHasPrompted] = useState(false);
 
   useEffect(() => {
     refresh();
   }, []);
 
   async function refresh() {
-    const status = await checkAccessibilityPermission();
+    const status = await checkAccessibilityPermission(!hasPrompted);
+    setHasPrompted(true);
     setPermissionGranted(status.granted);
     setPermissionDetail(status.detail);
     if (!status.granted) onRevoked();

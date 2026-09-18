@@ -14,6 +14,7 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::clipboard::{self, ClipboardError};
 use crate::commands::model::SharedModelState;
+use crate::commands::permissions::is_accessibility_trusted;
 use crate::context;
 use crate::inference::client::{CancellationToken, CompletionRequest};
 use crate::inference::SharedInferenceState;
@@ -93,6 +94,33 @@ async fn run_rewrite<R: tauri::Runtime>(
     active: SharedActiveRewrite,
 ) -> Result<(), String> {
     active.in_flight.store(true, Ordering::SeqCst);
+
+    // Refuse to call enigo unless we *actually* have Accessibility. Without
+    // this guard, enigo's macOS backend can crash the process via a CGF
+    // SIGSEGV when the underlying CGEventPost returns an unhandled error.
+    match is_accessibility_trusted(false) {
+        Ok(true) => {}
+        Ok(false) => {
+            active.in_flight.store(false, Ordering::SeqCst);
+            let body = "Accessibility permission is required. \
+                        Open Settings → Permissions, grant it, then press ⌘⇧Space again.";
+            if let Err(err) = app
+                .notification()
+                .builder()
+                .title("PrivatePrompter")
+                .body(body)
+                .show()
+            {
+                tracing::debug!("notification show failed: {err}");
+            }
+            return Err("accessibility not granted".to_string());
+        }
+        Err(err) => {
+            active.in_flight.store(false, Ordering::SeqCst);
+            return Err(format!("accessibility probe failed: {err}"));
+        }
+    }
+
     let result = run_rewrite_inner(
         app,
         undo_state,

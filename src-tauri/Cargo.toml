@@ -38,6 +38,7 @@ hex = "0.4"
 directories = "5"
 thiserror = "1"
 anyhow = "1"
+objc2 = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 arboard = "3"
