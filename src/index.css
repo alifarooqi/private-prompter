@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+/* Honor macOS system appearance so we look at home in light & dark mode. */
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: var(--pp-bg, transparent);
+  color: var(--pp-fg, inherit);
+}
+
+/* macOS-style scrollbars. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 120, 120, 0.4);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 120, 0.6);
+}
