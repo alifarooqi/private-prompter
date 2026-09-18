@@ -141,6 +141,27 @@ pub fn active_model_id(state: State<'_, SharedModelState>) -> Option<String> {
         .cloned()
 }
 
+/// Scan the models directory and populate the `downloaded` map. Called
+/// once on app startup so we don't lose track of models the user has
+/// already pulled (the in-memory state isn't persisted across launches).
+pub fn scan_downloaded(state: &SharedModelState) {
+    use crate::model::registry;
+    use std::path::PathBuf;
+
+    let manifest = registry::get();
+    let Ok(mut guard) = state.downloaded.try_lock() else {
+        tracing::warn!("scan: could not lock downloaded map (busy)");
+        return;
+    };
+    for entry in manifest.list() {
+        let path: PathBuf = crate::model::store::model_path(&entry.id, &entry.file);
+        if path.exists() {
+            tracing::info!("scan: found {} at {}", entry.id, path.display());
+            guard.insert(entry.id.clone(), path);
+        }
+    }
+}
+
 fn summary_fields(m: &ModelEntry) -> (String, String, u64, u32, u64) {
     (
         m.display_name.clone(),

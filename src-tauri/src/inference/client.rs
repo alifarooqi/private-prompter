@@ -140,8 +140,23 @@ where
             if trimmed.is_empty() {
                 continue;
             }
+            // llama-server uses SSE: each event line is "data: <json>",
+            // terminated by "[DONE]". Strip the prefix and skip sentinel.
+            let payload = trimmed
+                .strip_prefix("data:")
+                .map(str::trim_start)
+                .unwrap_or(trimmed);
+            if payload == "[DONE]" {
+                tracing::info!(
+                    "inference: stream done (SSE [DONE]), {} lines, {} bytes, {} chars",
+                    line_count,
+                    raw_bytes,
+                    full.chars().count()
+                );
+                return Ok(full);
+            }
             line_count += 1;
-            match serde_json::from_str::<LlamaStreamLine>(trimmed) {
+            match serde_json::from_str::<LlamaStreamLine>(payload) {
                 Ok(parsed) => {
                     let content = parsed.content;
                     let stop = parsed.stop;
@@ -169,7 +184,7 @@ where
                         "inference: malformed stream line ({}): {} (line={:?})",
                         line_count,
                         err,
-                        &trimmed[..trimmed.len().min(200)]
+                        &payload[..payload.len().min(200)]
                     );
                 }
             }

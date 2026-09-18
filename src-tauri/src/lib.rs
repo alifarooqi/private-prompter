@@ -80,6 +80,14 @@ pub fn run() {
                     model::store::set_data_dir(std::env::temp_dir().join("com.alifarooqi.privateprompter"));
                 }
             }
+
+            // Re-populate the in-memory "downloaded" map from disk so we
+            // don't lose track of models the user pulled on previous runs.
+            {
+                let state: tauri::State<SharedModelState> = app.state();
+                commands::model::scan_downloaded(&state);
+            }
+
             tray::install(app.handle())?;
 
             // Hydrate the undo stack from disk. Best-effort.
