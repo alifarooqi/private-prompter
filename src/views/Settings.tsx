@@ -3,6 +3,18 @@ import {
   checkAccessibilityPermission,
   openAccessibilitySettings,
 } from "../lib/permissions";
+import {
+  type DownloadProgress,
+  type ModelSummary,
+  type ServerStatus,
+  formatBytes,
+  listModels,
+  onDownloadProgress,
+  recommendedModelId,
+  startInference,
+  startModelDownload,
+} from "../lib/model";
+import { BUILTIN_TEMPLATES } from "../lib/templates";
 
 interface Props {
   onRevoked: () => void;
@@ -11,9 +23,10 @@ interface Props {
 type Tab = "general" | "model" | "templates" | "privacy" | "about";
 
 /**
- * Settings window — the only window PrivatePrompter has. Phase 1 wires up the
- * shell, tabs, and the Accessibility permission panel. Subsequent phases fill
- * in the contents of each tab.
+ * Settings window — the only window PrivatePrompter has.
+ *
+ * Phase 1 wires up the shell + permissions tab. Phase 2 fills the Model
+ * tab (this commit). Subsequent phases fill Templates, Privacy, About.
  */
 export function Settings({ onRevoked }: Props) {
   const [tab, setTab] = useState<Tab>("general");
@@ -187,23 +200,220 @@ function PermissionRow({
 }
 
 function ModelTab() {
+  const [models, setModels] = useState<ModelSummary[] | null>(null);
+  const [recommendedId, setRecommendedId] = useState<string | null>(null);
+  const [progressById, setProgressById] = useState<
+    Record<string, DownloadProgress>
+  >({});
+  const [server, setServer] = useState<ServerStatus | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    async function load() {
+      try {
+        const [list, recommended] = await Promise.all([
+          listModels(),
+          recommendedModelId(),
+        ]);
+        if (!cancelled) {
+          setModels(list);
+          setRecommendedId(recommended);
+        }
+        unlisten = await onDownloadProgress((p) => {
+          setProgressById((prev) => ({ ...prev, [p.modelId]: p }));
+          if (p.state === "completed" || p.state === "failed") {
+            listModels().then(setModels).catch(() => {});
+          }
+        });
+      } catch (err) {
+        console.error("model load failed", err);
+      }
+    }
+
+    void load();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  async function onDownload(modelId: string) {
+    setBusyId(modelId);
+    try {
+      await startModelDownload(modelId);
+    } catch (err) {
+      console.error("download failed", err);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onStartServer() {
+    try {
+      const status = await startInference();
+      setServer(status);
+    } catch (err) {
+      console.error("start inference failed", err);
+    }
+  }
+
+  if (models === null) {
+    return <p className="text-sm text-neutral-500">Loading model registry…</p>;
+  }
+
   return (
-    <div className="space-y-3">
-      <h2 className="text-base font-medium">Model</h2>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
-        Phase 2: choose a model, see download progress, switch models.
-      </p>
+    <div className="space-y-5">
+      <section>
+        <h2 className="mb-3 text-base font-medium">Model</h2>
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Highlighted text is rewritten by a small local LLM. Pick the model
+          that matches your Mac's RAM. The default recommendation is based on
+          <code className="ml-1 rounded bg-neutral-100 px-1 text-xs dark:bg-neutral-800">
+            sysctl hw.memsize
+          </code>
+          .
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        {models.map((m) => {
+          const progress = progressById[m.id];
+          const downloading = busyId === m.id;
+          const isRecommended = m.id === recommendedId;
+          return (
+            <div
+              key={m.id}
+              className="flex items-center justify-between rounded-lg border border-neutral-200 p-4 dark:border-neutral-800"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-medium">{m.display_name}</div>
+                  {isRecommended && (
+                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-200">
+                      Recommended
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                  {m.publisher} · {formatBytes(m.size_bytes)} ·{" "}
+                  {Math.round(m.min_ram_bytes / 1024 ** 3)}+ GB RAM
+                </div>
+                {progress && (
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+                    <div
+                      className="h-full bg-neutral-900 transition-[width] dark:bg-neutral-100"
+                      style={{
+                        width: `${Math.min(100, (progress.bytesDownloaded / progress.totalBytes) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                )}
+                {progress && (
+                  <div className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                    {progress.state} ·{" "}
+                    {formatBytes(progress.bytesDownloaded)} /{" "}
+                    {formatBytes(progress.totalBytes)}
+                  </div>
+                )}
+              </div>
+              <div className="ml-3 shrink-0">
+                {m.downloaded ? (
+                  <span className="rounded-md border border-green-200 px-2.5 py-1 text-xs font-medium text-green-700 dark:border-green-800 dark:text-green-300">
+                    Ready
+                  </span>
+                ) : downloading ? (
+                  <button
+                    disabled
+                    className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium opacity-50 dark:border-neutral-700"
+                  >
+                    Downloading…
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onDownload(m.id)}
+                    className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                  >
+                    Download
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-base font-medium">Inference server</h2>
+        <div className="flex items-center justify-between rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <div className="text-sm">
+            <div className="font-medium">
+              {server?.running
+                ? `Running on ${server.host}:${server.port}`
+                : "Not running"}
+            </div>
+            <div className="text-xs text-neutral-500 dark:text-neutral-400">
+              The server starts automatically the first time you trigger a
+              rewrite. You can also start it manually here.
+            </div>
+          </div>
+          <button
+            onClick={onStartServer}
+            disabled={!models.some((m) => m.downloaded)}
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          >
+            Start server
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
 
 function TemplatesTab() {
+  const [active, setActive] = useState<string>("prompt-master");
+
   return (
-    <div className="space-y-3">
-      <h2 className="text-base font-medium">Templates</h2>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
-        Phase 7: browse and edit meta-prompt templates.
-      </p>
+    <div className="space-y-5">
+      <section>
+        <h2 className="mb-3 text-base font-medium">Templates</h2>
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Pick the meta-prompt that turns your highlighted text into the
+          final prompt we send to the model. Edit-in-place is planned for
+          Phase 7 (Polish).
+        </p>
+      </section>
+
+      <section className="space-y-2">
+        {BUILTIN_TEMPLATES.map((t) => (
+          <label
+            key={t.id}
+            className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition ${
+              active === t.id
+                ? "border-neutral-900 dark:border-neutral-100"
+                : "border-neutral-200 hover:border-neutral-400 dark:border-neutral-800 dark:hover:border-neutral-600"
+            }`}
+          >
+            <input
+              type="radio"
+              name="template"
+              value={t.id}
+              checked={active === t.id}
+              onChange={() => setActive(t.id)}
+              className="mt-0.5"
+            />
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{t.display_name}</div>
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                {t.description}
+              </div>
+            </div>
+          </label>
+        ))}
+      </section>
     </div>
   );
 }
@@ -212,8 +422,11 @@ function PrivacyTab() {
   return (
     <div className="space-y-3">
       <h2 className="text-base font-medium">Privacy</h2>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
-        Phase 9: clear undo stack, clear cached prompts, opt-in diagnostics.
+      <p className="text-sm text-neutral-600 dark:text-neutral-300">
+        PrivatePrompter makes no network calls after the initial model
+        download. No analytics, no telemetry, no update pings beyond a
+        manual "Check for updates" action. Highlighted text never leaves
+        your device.
       </p>
       <p className="text-sm text-neutral-500 dark:text-neutral-400">
         Read the{" "}
@@ -222,8 +435,8 @@ function PrivacyTab() {
           href="https://github.com/<owner>/private-prompter/blob/main/docs/privacy.md"
         >
           privacy policy
-        </a>{" "}
-        for details.
+        </a>
+        .
       </p>
     </div>
   );
@@ -264,13 +477,10 @@ function AboutTab() {
       </ul>
       <p className="pt-2 text-xs text-neutral-500 dark:text-neutral-400">
         Default meta-prompt adapted from{" "}
-        <a
-          className="underline"
-          href="https://github.com/nidhinjs/prompt-master"
-        >
+        <a className="underline" href="https://github.com/nidhinjs/prompt-master">
           nidhinjs/prompt-master
         </a>{" "}
-        (MIT).
+        (MIT). See <code>assets/NOTICE</code>.
       </p>
     </div>
   );

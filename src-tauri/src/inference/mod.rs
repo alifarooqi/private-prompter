@@ -1,0 +1,137 @@
+//! Embedded `llama.cpp` sidecar management.
+//!
+//! Phase 3 owns:
+//!   * Locating the sidecar binary and the GGUF model.
+//!   * Spawning `llama-server` on `127.0.0.1:<random port>`.
+//!   * Streaming completions via HTTP (Phase 8 plugs the streaming in).
+//!   * Restarting on crash with backoff and tearing down on app quit.
+//!
+//! Phase 8 adds the streaming SSE client and the cancellation token that
+//! Phase 5's hotkey hook will share.
+
+pub mod client;
+pub mod server;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
+use tokio::sync::Mutex;
+
+use super::model::store as store_paths;
+
+pub use client::{CompletionChunk, CompletionRequest};
+
+/// Bundle of the sidecar state we share with the frontend.
+#[derive(Default)]
+pub struct InferenceState {
+    pub inner: Mutex<Option<server::RunningServer>>,
+}
+
+pub type SharedInferenceState = Arc<InferenceState>;
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct ServerStatus {
+    pub running: bool,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub current_model_id: Option<String>,
+    pub loading: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InferenceError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("server failed to become healthy within {0}s")]
+    Unhealthy(u64),
+    #[error("model not found in registry: {0}")]
+    UnknownModel(String),
+    #[error("gguf not downloaded yet for model {0}")]
+    ModelNotDownloaded(String),
+    #[error("http: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("server not running — start it first")]
+    NotRunning,
+}
+
+impl serde::Serialize for InferenceError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+/// Tauri commands for the inference layer. Wired up in lib.rs.
+pub mod commands {
+    use super::*;
+    use crate::commands::model::SharedModelState;
+    use crate::model::registry;
+
+    #[tauri::command]
+    pub async fn start_inference(
+        app: AppHandle,
+        state: State<'_, SharedInferenceState>,
+        model_state: State<'_, SharedModelState>,
+    ) -> Result<ServerStatus, String> {
+        let downloaded = model_state.downloaded.lock().await;
+        let model_id_opt: Option<String> = downloaded.keys().next().cloned();
+        drop(downloaded);
+
+        let Some(model_id) = model_id_opt else {
+            return Err("No model downloaded yet".to_string());
+        };
+        let entry = registry::get().find(&model_id).map_err(|e| e.to_string())?;
+        let gguf = gguf_path(&entry.id, &entry.file).ok_or_else(|| {
+            format!("GGUF not on disk for model {}", entry.id)
+        })?;
+
+        let mut guard = state.inner.lock().await;
+        if let Some(existing) = guard.as_mut() {
+            if existing.is_running() {
+                let _ = existing.stop_in_place().await;
+            }
+        }
+
+        let server = server::RunningServer::start(&app, &gguf, &entry.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = server.status();
+        *guard = Some(server);
+        Ok(status)
+    }
+
+    #[tauri::command]
+    pub async fn stop_inference(
+        state: State<'_, SharedInferenceState>,
+    ) -> Result<(), String> {
+        let mut guard = state.inner.lock().await;
+        if let Some(server) = guard.take() {
+            let _ = server.stop().await;
+        }
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn inference_status(
+        state: State<'_, SharedInferenceState>,
+    ) -> Result<ServerStatus, String> {
+        let guard = state.inner.lock().await;
+        Ok(match guard.as_ref() {
+            Some(s) => s.status(),
+            None => ServerStatus {
+                running: false,
+                host: None,
+                port: None,
+                current_model_id: None,
+                loading: false,
+            },
+        })
+    }
+
+    fn gguf_path(model_id: &str, file: &str) -> Option<PathBuf> {
+        let p = store_paths::model_path(model_id, file);
+        if p.exists() { Some(p) } else { None }
+    }
+}

@@ -1,0 +1,46 @@
+PrivatePrompter includes third-party material under the following licenses.
+
+================================================================================
+nidhinjs/prompt-master
+================================================================================
+Source: https://github.com/nidhinjs/prompt-master
+License: MIT License
+
+Copyright (c) 2024 nidhinjs
+
+The bundled meta-prompt at `assets/prompts/prompt-master.md` is adapted
+from nidhinjs/prompt-master, originally distributed as a Claude Code
+"skill". The structure, intent, and prompt-engineering instructions come
+from that project; PrivatePrompter has only rewrapped them for on-device
+LLM use and added Handlebars-style placeholders for context injection.
+
+Permission notice from the original project:
+
+> Permission is hereby granted, free of charge, to any person obtaining a
+> copy of this software and associated documentation files (the "Software"),
+> to deal in the Software without restriction, including without limitation
+> the rights to use, copy, modify, merge, publish, distribute, sublicense,
+> and/or sell copies of the Software, and to permit persons to whom the
+> Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included
+> in all copies or substantial portions of the Software.
+
+================================================================================
+llama.cpp
+================================================================================
+Source: https://github.com/ggerganov/llama.cpp
+License: MIT License
+
+The embedded inference engine (compiled via `scripts/build-sidecar.sh` and
+shipped under `src-tauri/binaries/`) is llama.cpp. PrivatePrompter makes no
+modifications to the upstream source beyond what the sidecar build script
+configures.
+
+================================================================================
+Tauri, plugins, and Rust dependencies
+================================================================================
+See each crate's LICENSE in its repository. All Tauri plugins and major
+Rust crates used by PrivatePrompter are MIT or MIT/Apache-2.0 dual licensed.
+A generated dependency license report is published with each release at
+`docs/third-party-licenses.md`.
