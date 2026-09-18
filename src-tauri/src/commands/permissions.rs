@@ -98,7 +98,7 @@ fn is_process_trusted(prompt: bool) -> Result<bool, String> {
                 ns_dict_class,
                 dictionaryWithObjects: objects.as_ptr()
                 forKeys: keys.as_ptr()
-                count: 1
+                count: 1usize
             ]
         } else {
             std::ptr::null_mut()

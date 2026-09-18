@@ -140,10 +140,15 @@ function GeneralTab({
         <h2 className="mb-3 text-base font-medium">Hotkey</h2>
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
           <kbd className="rounded border border-neutral-300 px-1 text-xs dark:border-neutral-700">
-            ⌘⇧Space
+            ⌘⌥R
           </kbd>{" "}
-          — highlight text anywhere, press to rewrite. (Customizable in a
-          later phase.)
+          — highlight text anywhere, press to rewrite.
+        </p>
+        <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+          We tried ⌘⇧Space (Maccy default) and ⌘⌥Space (Spotlight
+          window-search variant on some macOS). ⌘⌥R isn't bound by any
+          first-party macOS shortcut. Custom hotkey UI is a Phase 9 polish
+          item.
         </p>
       </section>
 
