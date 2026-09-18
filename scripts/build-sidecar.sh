@@ -51,14 +51,32 @@ build_for() {
     -DLLAMA_BUILD_EXAMPLES=OFF \
     -DLLAMA_BUILD_BENCHMARK=OFF \
     -DLLAMA_CURL=OFF \
+    -DLLAMA_OPENSSL=OFF \
+    -DBUILD_SHARED_LIBS=ON \
     >/dev/null
 
   cmake --build "$build_dir" --config Release --target llama-server -j
 
-  cp "$build_dir/bin/llama-server" \
-     "$OUT_DIR/llama-server-${cargo_target}"
+  # Copy the launcher + every @rpath dylib it needs, then re-point rpath so
+  # the loader finds them next to the executable. Without this the binary
+  # won't run outside the build dir.
+  local bin_out="$OUT_DIR/llama-server-${cargo_target}"
+  cp "$build_dir/bin/llama-server" "$bin_out"
 
-  echo "    wrote $OUT_DIR/llama-server-${cargo_target}"
+  # Find every @rpath/* dependency and copy the matching dylib from
+  # $build_dir/bin (the llama.cpp build output dir).
+  for dylib in $(otool -L "$bin_out" | awk '/@rpath\// {print $1}'); do
+    local name
+    name=$(basename "$dylib")
+    if [ -f "$build_dir/bin/$name" ]; then
+      cp "$build_dir/bin/$name" "$OUT_DIR/$name"
+    fi
+  done
+
+  # Rewrite the launcher's rpath so it looks for dylibs alongside itself.
+  install_name_tool -add_rpath "@executable_path" "$bin_out"
+
+  echo "    wrote $bin_out"
 }
 
 NATIVE_ARCH="$(uname -m)"

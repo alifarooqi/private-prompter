@@ -30,6 +30,11 @@ src-tauri/Cargo.lock
 # Tauri sidecars (built locally; downloaded by CI for releases)
 src-tauri/binaries/*/
 !src-tauri/binaries/.gitkeep
+!src-tauri/binaries/llama-server-*
+
+# Build outputs (llama.cpp source clone, etc.)
+.build/
+out/
 
 # Models downloaded at runtime (do not commit large binaries)
 models/
