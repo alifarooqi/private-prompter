@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an idea for PrivatePrompter.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us what you'd like PrivatePrompter to do, and why.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: A user-story framing helps: who, what, why.
+      placeholder: |
+        As a writer, when I highlight a sentence in Pages I want to press a different hotkey
+        and have PrivatePrompter rewrite it in a specific tone (e.g. "formal").
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      placeholder: Add a "tone" picker to Settings that injects a system-prompt prefix when the rewrite runs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve the problem, and why they fall short.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, mockups, links to similar features in other tools.
+    validations:
+      required: false

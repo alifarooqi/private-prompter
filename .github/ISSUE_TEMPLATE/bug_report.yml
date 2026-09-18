@@ -1,0 +1,89 @@
+name: Bug report
+description: Report something that isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. The more detail you can provide, the faster we can reproduce and fix it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: When I press the hotkey, no rewrite happens and the notification says "no text selected" even though text is highlighted.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: The highlighted text should be rewritten and pasted in place.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, minimal.
+      placeholder: |
+        1. Open TextEdit
+        2. Type "summarize this paper for me"
+        3. Highlight it
+        4. Press ⌘⇧Space
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PrivatePrompter version
+      placeholder: v0.1.0 or "main" branch
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Mac architecture
+      options:
+        - Apple Silicon (M1/M2/M3/M4)
+        - Intel
+      validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: 14.5 (Sonoma)
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model used
+      placeholder: Qwen 2.5 1.5B Q4_K_M
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Optional. Logs are at `~/Library/Logs/PrivatePrompter/`.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshots
+      description: Drag images here.
+    validations:
+      required: false

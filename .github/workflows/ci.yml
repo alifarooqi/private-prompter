@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-typecheck-frontend:
+    name: Frontend lint + typecheck
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci || npm install
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npx vitest run --reporter=verbose
+
+  test-rust:
+    name: Rust tests
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Format check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --all
+
+  frontend-build:
+    name: Frontend build
+    runs-on: macos-latest
+    needs: lint-and-typecheck-frontend
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci || npm install
+      - run: npm run build

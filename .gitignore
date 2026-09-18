@@ -1,0 +1,68 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+.cache/
+.parcel-cache/
+.turbo/
+coverage/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock
+# Keep Cargo.lock for binaries (Tauri app); uncomment to ignore for libraries:
+# Cargo.lock
+**/*.rs.bk
+
+# Tauri sidecars (built locally; downloaded by CI for releases)
+src-tauri/binaries/*/
+!src-tauri/binaries/.gitkeep
+
+# Models downloaded at runtime (do not commit large binaries)
+models/
+*.gguf
+
+# Secrets / signing
+*.p12
+*.cer
+*.pem
+.env
+.env.local
+.env.*.local
+.tauri/
+apple-developer-id/
+notarytool-profile/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build artifacts
+*.tsbuildinfo
+*.d.ts
+!.d.ts
+
+# Python (used by build scripts in some setups)
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Misc
+.history/

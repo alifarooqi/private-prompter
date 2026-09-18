@@ -1,0 +1,6 @@
+# llama.cpp sidecar binaries
+#
+# These are not committed. Build them locally with:
+#   ./scripts/build-sidecar.sh
+#
+# CI / releases build them on the runner and bundle them into the .dmg.
