@@ -165,6 +165,8 @@ function HotkeySection() {
   const [config, setConfig] = useState<HotkeyConfig | null>(null);
   const [recording, setRecording] = useState(false);
   const [pending, setPending] = useState<HotkeyConfig | null>(null);
+  /** Live preview while recording: modifier keys held so far, no trigger yet. */
+  const [liveModifiers, setLiveModifiers] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -183,24 +185,34 @@ function HotkeySection() {
       if (e.key === "Escape") {
         e.preventDefault();
         setPending(null);
+        setLiveModifiers([]);
         setRecording(false);
         return;
       }
       const key = codeToKey(e.code);
+      const mods = modifiersFromEvent(e);
+
       if (key === null) {
-        // Modifier-only press — wait for the real key.
+        // Modifier-only press. Update the live preview so the user sees
+        // "⌘_", then "⌘⌥_" as they stack up, before the trigger key.
+        e.preventDefault();
+        setError(null);
+        setLiveModifiers(mods);
         return;
       }
-      const mods = modifiersFromEvent(e);
+
+      // Non-modifier key pressed. A complete combo needs at least one
+      // modifier — surface a hint if the user is recording and presses
+      // a bare key.
       if (mods.length === 0) {
-        // Plain key without modifiers — most apps require at least one
-        // modifier for a global hotkey. Surface a hint.
+        e.preventDefault();
         setError("Pick at least one modifier (⌘, ⌥, ⌃, or ⇧).");
         return;
       }
       e.preventDefault();
       setError(null);
       setPending({ modifiers: mods, key });
+      setLiveModifiers(mods);
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -214,6 +226,7 @@ function HotkeySection() {
       const info = await setHotkey(pending);
       setConfig(info.config);
       setPending(null);
+      setLiveModifiers([]);
       setRecording(false);
     } catch (err) {
       setError(`Couldn't register: ${err}`);
@@ -229,6 +242,7 @@ function HotkeySection() {
       const info = await resetHotkey();
       setConfig(info.config);
       setPending(null);
+      setLiveModifiers([]);
       setRecording(false);
     } catch (err) {
       setError(`Reset failed: ${err}`);
@@ -249,7 +263,21 @@ function HotkeySection() {
           {recording ? (
             <>
               <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                Press a new combination…
+                {pending ? (
+                  <>
+                    Press a new combination…{" "}
+                    <span className="text-neutral-500 dark:text-neutral-400">
+                      (saved combo: {displayCombo(pending.modifiers, pending.key)})
+                    </span>
+                  </>
+                ) : liveModifiers.length > 0 ? (
+                  <span>
+                    {displayCombo(liveModifiers, "")}
+                    <span className="ml-1 animate-pulse text-neutral-400">…</span>
+                  </span>
+                ) : (
+                  "Press a new combination…"
+                )}
               </div>
               <div className="text-xs text-neutral-500 dark:text-neutral-400">
                 Modifiers + one regular key. Press{" "}
