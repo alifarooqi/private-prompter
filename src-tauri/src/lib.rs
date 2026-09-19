@@ -7,6 +7,7 @@ mod clipboard;
 mod commands;
 mod context;
 mod hotkey;
+mod hotkey_config;
 mod inference;
 mod model;
 mod prompt;
@@ -58,6 +59,9 @@ pub fn run() {
             inference::commands::stop_inference,
             inference::commands::inference_status,
             inference::commands::inference_health,
+            commands::hotkey::get_hotkey,
+            commands::hotkey::set_hotkey,
+            commands::hotkey::reset_hotkey,
         ])
         .setup(move |app| {
             // Resolve the canonical data dir via Tauri (which uses the

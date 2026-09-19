@@ -2,9 +2,8 @@
 //!
 //! Centralized so the rest of the app doesn't hard-code paths. The data dir
 //! is resolved at app boot via Tauri's `Manager::path().app_data_dir()`,
-//! which honors the bundle ID directly:
-//!
-//!     macOS:  ~/Library/Application Support/<bundle-identifier>/
+//! which honors the bundle ID directly. On macOS that resolves to
+//! `~/Library/Application Support/<bundle-identifier>/`.
 //!
 //! We can't compute that at module load (it requires an `AppHandle`), so
 //! `set_data_dir()` is called from `setup` in lib.rs and the rest of the

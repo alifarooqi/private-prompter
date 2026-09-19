@@ -21,13 +21,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::clipboard::{self};
 use crate::commands::model::SharedModelState;
 use crate::commands::permissions::is_accessibility_trusted;
 use crate::context;
+use crate::hotkey_config::{self, HotkeyConfig};
 use crate::inference::client::CompletionRequest;
 use crate::inference::SharedInferenceState;
 use crate::prompt::{self, PromptInput};
@@ -41,19 +42,6 @@ pub struct ActiveRewrite {
 }
 
 pub type SharedActiveRewrite = Arc<ActiveRewrite>;
-
-fn default_shortcut() -> Shortcut {
-    // ⌘⌥R (Cmd+Option+R) — "R for rewrite".
-    //
-    // We tried a few defaults and they all conflicted on the test machine:
-    //   ⌘⇧Space      → Maccy default
-    //   ⌘⌥Space      → Spotlight window-search variant on some macOS
-    //   ⌘⌥P / ⌘⌥S   → Preferences / Save As in many apps
-    //
-    // ⌘⌥R is not bound by any first-party macOS shortcut. Users can pick
-    // their own via the Settings UI once that lands.
-    Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyR)
-}
 
 /// Register the global hotkey. Called once from lib.rs `setup`.
 pub fn register<R: tauri::Runtime>(
@@ -69,8 +57,12 @@ pub fn register<R: tauri::Runtime>(
     let inference = Arc::clone(&*inference_state);
     let active_for_cb = active.clone();
 
+    let shortcut = hotkey_config::cached().to_shortcut().map_err(|err| {
+        tauri::Error::from(anyhow::anyhow!("hotkey config invalid: {err}"))
+    })?;
+
     app.global_shortcut()
-        .on_shortcut(default_shortcut(), move |app_handle, _shortcut, event| {
+        .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
                 // Cancellation path: if a rewrite is in flight, cancel and
                 // restore the original selection.
@@ -93,6 +85,67 @@ pub fn register<R: tauri::Runtime>(
         })
         .map_err(|e| tauri::Error::from(anyhow::anyhow!("hotkey register: {e}")))?;
 
+    tracing::info!("hotkey: registered {}", hotkey_config::cached().display());
+    Ok(())
+}
+
+/// Re-register the global hotkey using `cfg`. Called by the
+/// `set_hotkey` Tauri command after the user picks a new combination.
+/// Returns Err if the registration fails (e.g. the combo is already
+/// claimed by another app like Maccy or Spotlight).
+pub fn reregister<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cfg: HotkeyConfig,
+    undo_state: SharedUndoState,
+    active: SharedActiveRewrite,
+) -> Result<(), String> {
+    // Unregister the old shortcut (best-effort — if it wasn't registered
+    // because the previous attempt failed, this is a no-op).
+    let prev = hotkey_config::cached().clone();
+    if let Ok(prev_shortcut) = prev.to_shortcut() {
+        let _ = app.global_shortcut().unregister(prev_shortcut);
+    }
+
+    // Save the new config to disk before registering. If registration
+    // fails, we leave the on-disk state pointing at the new (failed)
+    // combo so the user sees the same state on relaunch and can fix it.
+    hotkey_config::save(&cfg).map_err(|e| format!("save: {e}"))?;
+    hotkey_config::invalidate();
+
+    // Register the new combo with the rewrite pipeline.
+    let model_state: tauri::State<SharedModelState> = app.state();
+    let inference_state: tauri::State<SharedInferenceState> = app.state();
+
+    let undo = undo_state.clone();
+    let model = Arc::clone(&*model_state);
+    let inference = Arc::clone(&*inference_state);
+    let active_for_cb = active.clone();
+
+    let new_shortcut = cfg.to_shortcut().map_err(|e| format!("invalid combo: {e}"))?;
+    app.global_shortcut()
+        .on_shortcut(new_shortcut, move |app_handle, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                if active_for_cb.in_flight.load(Ordering::SeqCst) {
+                    active_for_cb.cancel.cancel();
+                    return;
+                }
+                let undo = undo.clone();
+                let model = Arc::clone(&model);
+                let inference = Arc::clone(&inference);
+                let active = active_for_cb.clone();
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) =
+                        run_rewrite(&app_handle, undo, model, inference, active).await
+                    {
+                        tracing::warn!("rewrite failed: {err}");
+                    }
+                });
+            }
+        })
+        .map_err(|e| format!("register: {e}"))?;
+
+    tracing::info!("hotkey: reregistered to {}", cfg.display());
     Ok(())
 }
 
@@ -106,7 +159,6 @@ async fn run_rewrite<R: tauri::Runtime>(
     active.in_flight.store(true, Ordering::SeqCst);
 
     // Bail with a notification if we don't actually have Accessibility.
-    // The notification body reminds the user how to grant it.
     match is_accessibility_trusted(false) {
         Ok(true) => {}
         Ok(false) => {
@@ -160,9 +212,6 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     };
     let rendered = prompt::render(&template_str, &input).map_err(|e| e.to_string())?;
 
-    // Stream from llama-server if it's running, otherwise fall back to a
-    // placeholder rewrite so the rest of the pipeline is exercisable
-    // without a model.
     let url_string: String = {
         let guard = inference_state.inner.lock().await;
         match guard.as_ref() {
@@ -193,13 +242,9 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         accumulated
     };
 
-    // Replace the user's selection via the Accessibility API.
     clipboard::replace_selected_text(&rewritten)
         .map_err(|e| format!("replace selection failed: {e}"))?;
 
-    // Push an undo entry. We don't try to capture the original text
-    // (kAXSelectedText before our write would now be the rewritten text);
-    // the user can `⌘Z` in their app to revert.
     let model_id = {
         let guard = model_state.downloaded.lock().await;
         guard.keys().next().cloned().unwrap_or_default()
@@ -215,8 +260,6 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         })
         .await;
 
-    // Surface a macOS notification with the rewrite's char count, the
-    // template that was used, and the detected context domain.
     let body = format!(
         "Rewrote {} chars using {} / {}.",
         rewritten.chars().count(),
@@ -245,7 +288,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shortcut_is_cmd_option_r() {
-        assert!(matches!(default_shortcut().key, Code::KeyR));
+    fn default_shortcut_parses() {
+        // The default config must always produce a valid Shortcut; if it
+        // doesn't, the app won't register anything on first launch.
+        let cfg = hotkey_config::HotkeyConfig::default_for_macos();
+        assert!(cfg.to_shortcut().is_ok(), "{:?}", cfg);
     }
 }

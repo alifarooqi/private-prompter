@@ -18,6 +18,15 @@ import {
   stopInference,
 } from "../lib/model";
 import { BUILTIN_TEMPLATES } from "../lib/templates";
+import {
+  codeToKey,
+  displayCombo,
+  getHotkey,
+  modifiersFromEvent,
+  resetHotkey,
+  setHotkey,
+  type HotkeyConfig,
+} from "../lib/hotkey";
 
 interface Props {
   onRevoked: () => void;
@@ -139,21 +148,7 @@ function GeneralTab({
         />
       </section>
 
-      <section>
-        <h2 className="mb-3 text-base font-medium">Hotkey</h2>
-        <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          <kbd className="rounded border border-neutral-300 px-1 text-xs dark:border-neutral-700">
-            ⌘⌥R
-          </kbd>{" "}
-          — highlight text anywhere, press to rewrite.
-        </p>
-        <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-          We tried ⌘⇧Space (Maccy default) and ⌘⌥Space (Spotlight
-          window-search variant on some macOS). ⌘⌥R isn't bound by any
-          first-party macOS shortcut. Custom hotkey UI is a Phase 9 polish
-          item.
-        </p>
-      </section>
+      <HotkeySection />
 
       <section>
         <h2 className="mb-3 text-base font-medium">Startup</h2>
@@ -163,6 +158,168 @@ function GeneralTab({
         </label>
       </section>
     </div>
+  );
+}
+
+function HotkeySection() {
+  const [config, setConfig] = useState<HotkeyConfig | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [pending, setPending] = useState<HotkeyConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getHotkey()
+      .then((info) => setConfig(info.config))
+      .catch((err) => setError(`failed to load: ${err}`));
+  }, []);
+
+  // Capture the next modifier+key combo. We listen at the document level
+  // (not on a focused element) so the user can press the combo even when
+  // the focus is on the "Change" button itself.
+  useEffect(() => {
+    if (!recording) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPending(null);
+        setRecording(false);
+        return;
+      }
+      const key = codeToKey(e.code);
+      if (key === null) {
+        // Modifier-only press — wait for the real key.
+        return;
+      }
+      const mods = modifiersFromEvent(e);
+      if (mods.length === 0) {
+        // Plain key without modifiers — most apps require at least one
+        // modifier for a global hotkey. Surface a hint.
+        setError("Pick at least one modifier (⌘, ⌥, ⌃, or ⇧).");
+        return;
+      }
+      e.preventDefault();
+      setError(null);
+      setPending({ modifiers: mods, key });
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [recording]);
+
+  async function save() {
+    if (!pending) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const info = await setHotkey(pending);
+      setConfig(info.config);
+      setPending(null);
+      setRecording(false);
+    } catch (err) {
+      setError(`Couldn't register: ${err}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reset() {
+    setBusy(true);
+    setError(null);
+    try {
+      const info = await resetHotkey();
+      setConfig(info.config);
+      setPending(null);
+      setRecording(false);
+    } catch (err) {
+      setError(`Reset failed: ${err}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="mb-3 text-base font-medium">Hotkey</h2>
+      <p className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">
+        Highlight text anywhere and press the hotkey to rewrite.
+      </p>
+
+      <div className="flex items-center gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+        <div className="flex-1">
+          {recording ? (
+            <div className="text-sm">
+              <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                Press a new combination…
+              </div>
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                Modifiers + one regular key. Press <kbd className="rounded border border-neutral-300 px-1 text-[10px] dark:border-neutral-700">Esc</kbd> to cancel.
+              </div>
+            </div>
+          ) : config ? (
+            <div className="text-sm">
+              <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                <kbd className="rounded border border-neutral-300 bg-neutral-100 px-2 py-1 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-800">
+                  {displayCombo(config.modifiers, config.key)}
+                </kbd>
+              </div>
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                Click Change to record a new combination.
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-neutral-500">Loading…</div>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          {recording ? (
+            <>
+              <button
+                onClick={save}
+                disabled={!pending || busy}
+                className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                {pending
+                  ? `Save ${displayCombo(pending.modifiers, pending.key)}`
+                  : "Save"}
+              </button>
+              <button
+                onClick={() => {
+                  setPending(null);
+                  setRecording(false);
+                }}
+                disabled={busy}
+                className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setRecording(true)}
+                className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              >
+                Change
+              </button>
+              <button
+                onClick={reset}
+                disabled={busy}
+                className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              >
+                Reset
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 
