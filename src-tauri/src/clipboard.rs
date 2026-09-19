@@ -1,28 +1,28 @@
-//! Selected-text read/write via the macOS Accessibility API.
+//! Read and replace the user's selected text via the macOS Accessibility
+//! API.
 //!
 //! Why we don't use the clipboard dance (⌘C → read → write → ⌘V):
 //!
 //!   * Reading via simulated ⌘C requires our process to have Input
-//!     Monitoring permission; without it enigo's `event.post()` SIGSEGVs
-//!     the process.
-//!   * Even when both Accessibility and IM are granted, System Events'
-//!     synthetic `key code 9 using {command down}` is silently ignored by
-//!     some apps because they distinguish synthetic events from real
+//!     Monitoring permission; without it, enigo's `event.post()` SIGSEGVs
+//!     the process. (We tested this — the OS kills us without a useful
+//!     error message.)
+//!   * Even with both Accessibility and IM granted, System Events'
+//!     synthetic `key code 9 using {command down}` is silently ignored
+//!     by some apps because they distinguish synthetic events from real
 //!     hardware events via `CGEventSource`.
 //!
 //! The Accessibility API sidesteps both: `kAXSelectedTextAttribute` is
-//! directly settable on editable text fields. We read the selection, build
-//! the rewrite, then write it back as the new selection — no clipboard,
-//! no synthetic keystrokes.
+//! directly settable on editable text fields. We read the selection,
+//! build the rewrite, then write it back as the new selection — no
+//! clipboard, no synthetic keystrokes.
 //!
 //! Trade-off: rich-text formatting in the replacement is plain text only.
-//! For our use case (a prompt rewrite replaces selection with a fresh
-//! string) that's exactly right.
+//! For our use case (replacing selection with a fresh rewritten string)
+//! that's exactly right.
 
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{msg_send, ClassType};
-use std::ffi::c_void;
-use std::ptr::null;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelectedTextError {
@@ -37,8 +37,6 @@ pub enum SelectedTextError {
     #[error("ax error: {0}")]
     Ax(String),
 }
-
-const CF_STRING_ENCODING_UTF8: u64 = 0x08000100;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -57,7 +55,7 @@ extern "C" {
 
 /// Read the currently selected text from the focused UI element.
 pub fn read_selected_text() -> Result<String, SelectedTextError> {
-    let pool: *mut AnyObject = alloc_pool();
+    let pool = alloc_pool();
     let system = unsafe { AXUIElementCreateSystemWide() };
     if system.is_null() {
         drain_pool(pool);
@@ -81,7 +79,7 @@ pub fn read_selected_text() -> Result<String, SelectedTextError> {
 /// Replace the currently selected text with `new_text`. The focused element
 /// must be an editable text field; otherwise `NotSettable` is returned.
 pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
-    let pool: *mut AnyObject = alloc_pool();
+    let pool = alloc_pool();
     let system = unsafe { AXUIElementCreateSystemWide() };
     if system.is_null() {
         drain_pool(pool);
@@ -95,10 +93,7 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
     })?;
     let new_ns: *mut AnyObject = unsafe {
         let c_string = std::ffi::CString::new(new_text).unwrap_or_default();
-        msg_send![
-            ns_string_class,
-            stringWithUTF8String: c_string.as_ptr()
-        ]
+        msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
     };
 
     let status = unsafe {
@@ -110,9 +105,8 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
     };
     drain_pool(pool);
 
-    // kAXErrorSuccess = 0; kAXErrorFailure = -25200; kAXErrorAttributeUnsupported
-    // = -25205; kAXErrorCannotSet = 25207 (no leading minus on Apple's errnos
-    // but we surface them as is).
+    // kAXErrorSuccess = 0; non-zero means the attribute isn't settable on
+    // this element (window vs editable text field, etc.).
     if status != 0 {
         return Err(SelectedTextError::NotSettable);
     }
@@ -120,9 +114,8 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
 }
 
 fn alloc_pool() -> *mut AnyObject {
-    let pool_class = match AnyClass::get("NSAutoreleasePool") {
-        Some(c) => c,
-        None => return std::ptr::null_mut(),
+    let Some(pool_class) = AnyClass::get("NSAutoreleasePool") else {
+        return std::ptr::null_mut();
     };
     unsafe { msg_send![pool_class, new] }
 }
@@ -137,16 +130,13 @@ fn drain_pool(pool: *mut AnyObject) {
 }
 
 fn attr_name(name: &str) -> *const AnyObject {
-    let ns_string_class = match AnyClass::get("NSString") {
-        Some(c) => c,
-        None => return std::ptr::null(),
+    let Some(ns_string_class) = AnyClass::get("NSString") else {
+        return std::ptr::null();
     };
     unsafe {
         let c_string = std::ffi::CString::new(name).unwrap_or_default();
-        let result: *mut AnyObject = msg_send![
-            ns_string_class,
-            stringWithUTF8String: c_string.as_ptr()
-        ];
+        let result: *mut AnyObject =
+            msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()];
         result as *const AnyObject
     }
 }
@@ -156,8 +146,7 @@ fn copy_attr(
     attribute: *const AnyObject,
 ) -> Result<*mut AnyObject, SelectedTextError> {
     let mut out: *mut AnyObject = std::ptr::null_mut();
-    let status =
-        unsafe { AXUIElementCopyAttributeValue(element, attribute, &mut out) };
+    let status = unsafe { AXUIElementCopyAttributeValue(element, attribute, &mut out) };
     if status != 0 {
         // -25205 = attribute unsupported on this element (e.g. window has no
         // selected-text attr because it's not a text field).
@@ -173,32 +162,24 @@ fn cf_string_to_string(cf: *mut AnyObject) -> String {
     if cf.is_null() {
         return String::new();
     }
-    let ns_string_class = match AnyClass::get("NSString") {
-        Some(c) => c,
-        None => return String::new(),
-    };
     unsafe {
         let utf8_ptr: *const i8 = msg_send![cf, UTF8String];
         if utf8_ptr.is_null() {
             return String::new();
         }
-        let cstr = std::ffi::CStr::from_ptr(utf8_ptr);
-        cstr.to_string_lossy().into_owned()
+        std::ffi::CStr::from_ptr(utf8_ptr)
+            .to_string_lossy()
+            .into_owned()
     }
 }
-
-// Quiet the unused-import warning.
-#[allow(dead_code)]
-const _UNUSED: (*const c_void, *const AnyObject) =
-    (null(), null());
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn empty_string_is_distinguishable_from_missing() {
-        // Sanity: the two empty-handling branches in read_selected_text
-        // can't be exercised from cargo test (no AX), but the code path
-        // exists and is reachable.
+    fn module_compiles_without_ax_runtime() {
+        // Sanity: the AX-dependent branches can't be exercised from cargo
+        // test (no AX without an app context), but the module needs to
+        // compile cleanly so we know we haven't broken the FFI signatures.
         let _: &str = "";
     }
 }

@@ -1,9 +1,21 @@
 //! Global hotkey registration and the rewrite pipeline.
 //!
-//! Phase 8 wires up:
-//!   * streaming inference
-//!   * cancellation via a second hotkey press
-//!   * a notification with an Undo affordance
+//! Flow when the hotkey fires:
+//!
+//!   1. Refuse to proceed unless AXIsProcessTrusted reports our process
+//!      as trusted. (Without this guard, downstream calls into CoreGraphics
+//!      would crash the process; we tested it.)
+//!   2. Read the user's selected text via `kAXSelectedTextAttribute`.
+//!   3. Detect context (frontmost app + URL, then URL/app heuristic).
+//!   4. Render the active template (default = `prompt-master`).
+//!   5. Stream inference from the local `llama-server`. If no model is
+//!      downloaded yet, fall back to a placeholder rewrite so the rest
+//!      of the pipeline is still exercisable end-to-end.
+//!   6. Replace the user's selection via `kAXSelectedTextAttribute`.
+//!   7. Push an undo entry and surface a notification.
+//!
+//! A second hotkey press while a rewrite is in flight cancels it (the
+//! `ActiveRewrite` cancel flag is checked between streaming chunks).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,16 +28,15 @@ use crate::clipboard::{self};
 use crate::commands::model::SharedModelState;
 use crate::commands::permissions::is_accessibility_trusted;
 use crate::context;
-use crate::inference::client::{CancellationToken, CompletionRequest};
+use crate::inference::client::CompletionRequest;
 use crate::inference::SharedInferenceState;
-use crate::model::registry;
 use crate::prompt::{self, PromptInput};
 use crate::undo::{self, SharedUndoState, UndoEntry};
 
 /// Tracks the in-flight rewrite so a second hotkey press can cancel it.
 #[derive(Default)]
 pub struct ActiveRewrite {
-    pub cancel: CancellationToken,
+    pub cancel: crate::inference::client::CancellationToken,
     pub in_flight: Arc<AtomicBool>,
 }
 
@@ -34,16 +45,13 @@ pub type SharedActiveRewrite = Arc<ActiveRewrite>;
 fn default_shortcut() -> Shortcut {
     // ⌘⌥R (Cmd+Option+R) — "R for rewrite".
     //
-    // macOS system shortcut map (for context, all known conflicts we tried):
-    //   ⌘Space       → Spotlight
-    //   ⌘⇧Space      → Maccy default, and other clipboard managers
-    //   ⌘⌥Space      → Spotlight window-search variant
-    //   ⌘⌃Space      → Emoji picker
+    // We tried a few defaults and they all conflicted on the test machine:
+    //   ⌘⇧Space      → Maccy default
+    //   ⌘⌥Space      → Spotlight window-search variant on some macOS
     //   ⌘⌥P / ⌘⌥S   → Preferences / Save As in many apps
     //
-    // ⌘⌥R is not bound by any first-party macOS shortcut. If a third-party
-    // app the user has installed still claims it, the Phase 9 settings UI
-    // for picking the hotkey becomes urgent.
+    // ⌘⌥R is not bound by any first-party macOS shortcut. Users can pick
+    // their own via the Settings UI once that lands.
     Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyR)
 }
 
@@ -64,11 +72,9 @@ pub fn register<R: tauri::Runtime>(
     app.global_shortcut()
         .on_shortcut(default_shortcut(), move |app_handle, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                tracing::info!("HOTKEY PRESSED");
                 // Cancellation path: if a rewrite is in flight, cancel and
-                // restore the original clipboard.
+                // restore the original selection.
                 if active_for_cb.in_flight.load(Ordering::SeqCst) {
-                    tracing::info!("HOTKEY: cancelling in-flight rewrite");
                     active_for_cb.cancel.cancel();
                     return;
                 }
@@ -79,7 +85,6 @@ pub fn register<R: tauri::Runtime>(
                 let active = active_for_cb.clone();
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    tracing::info!("HOTKEY: spawned rewrite task");
                     if let Err(err) = run_rewrite(&app_handle, undo, model, inference, active).await {
                         tracing::warn!("rewrite failed: {err}");
                     }
@@ -91,16 +96,6 @@ pub fn register<R: tauri::Runtime>(
     Ok(())
 }
 
-/// End-to-end rewrite (Phase 8):
-///   1. Save current clipboard so we can restore on undo.
-///   2. Simulate `Cmd+C` and read the highlighted text.
-///   3. Detect context.
-///   4. Render the active template (default = `prompt-master`).
-///   5. Stream inference from `llama-server`, updating the clipboard as
-///      tokens arrive.
-///   6. Simulate `Cmd+V` once streaming completes.
-///   7. Push an undo entry and show a notification.
-#[allow(clippy::too_many_arguments)]
 async fn run_rewrite<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     undo_state: SharedUndoState,
@@ -110,15 +105,14 @@ async fn run_rewrite<R: tauri::Runtime>(
 ) -> Result<(), String> {
     active.in_flight.store(true, Ordering::SeqCst);
 
-    // Refuse to call enigo unless we *actually* have Accessibility. Without
-    // this guard, enigo's macOS backend can crash the process via a CGF
-    // SIGSEGV when the underlying CGEventPost returns an unhandled error.
+    // Bail with a notification if we don't actually have Accessibility.
+    // The notification body reminds the user how to grant it.
     match is_accessibility_trusted(false) {
         Ok(true) => {}
         Ok(false) => {
             active.in_flight.store(false, Ordering::SeqCst);
             let body = "Accessibility permission is required. \
-                        Open Settings → Permissions, grant it, then press ⌘⇧Space again.";
+                        Open Settings → Permissions, grant it, then press the hotkey again.";
             if let Err(err) = app
                 .notification()
                 .builder()
@@ -136,14 +130,7 @@ async fn run_rewrite<R: tauri::Runtime>(
         }
     }
 
-    let result = run_rewrite_inner(
-        app,
-        undo_state,
-        model_state,
-        inference_state,
-        active.clone(),
-    )
-    .await;
+    let result = run_rewrite_inner(app, undo_state, model_state, inference_state, active.clone()).await;
     active.in_flight.store(false, Ordering::SeqCst);
     result
 }
@@ -152,24 +139,18 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     undo_state: SharedUndoState,
     model_state: SharedModelState,
-    _inference_state: SharedInferenceState,
+    inference_state: SharedInferenceState,
     active: SharedActiveRewrite,
 ) -> Result<(), String> {
-    tracing::info!("hotkey: entered run_rewrite_inner");
-
-    // Read the user's selected text directly via the Accessibility API.
-    // No clipboard, no simulated ⌘C — those require Input Monitoring and
-    // get silently rejected on some macOS versions anyway.
     let raw = clipboard::read_selected_text()
         .map_err(|e| format!("read selection failed: {e}"))?;
-    tracing::info!("hotkey: selected text read ({} chars)", raw.len());
     if raw.trim().is_empty() {
         return Err("no text selected".to_string());
     }
 
     let profile = context::detect();
-    let (template_id, template_str) = prompt::load_template("prompt-master")
-        .map_err(|e| e.to_string())?;
+    let (template_id, template_str) =
+        prompt::load_template("prompt-master").map_err(|e| e.to_string())?;
     let input = PromptInput {
         input: &raw,
         context: &profile,
@@ -179,11 +160,11 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     };
     let rendered = prompt::render(&template_str, &input).map_err(|e| e.to_string())?;
 
-    // Resolve the sidecar base URL. If the server isn't running we fall back
-    // to the placeholder rewrite so the rest of the pipeline (clipboard +
-    // undo + notification) is still exercisable without a model.
+    // Stream from llama-server if it's running, otherwise fall back to a
+    // placeholder rewrite so the rest of the pipeline is exercisable
+    // without a model.
     let url_string: String = {
-        let guard = _inference_state.inner.lock().await;
+        let guard = inference_state.inner.lock().await;
         match guard.as_ref() {
             Some(server) => server.base_url().to_string(),
             None => String::new(),
@@ -205,8 +186,6 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
             cancel,
             |chunk| {
                 accumulated.push_str(&chunk.content);
-                // No clipboard write here in the AX path — we'll set the
-                // selection directly once streaming completes.
             },
         )
         .await
@@ -214,14 +193,13 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         accumulated
     };
 
-    // Replace the user's selection via the Accessibility API. No clipboard,
-    // no simulated keystrokes — apps receive the change as if the user
-    // typed it.
-    tracing::info!("hotkey: writing replacement via AX kAXSelectedTextAttribute");
+    // Replace the user's selection via the Accessibility API.
     clipboard::replace_selected_text(&rewritten)
         .map_err(|e| format!("replace selection failed: {e}"))?;
-    tracing::info!("hotkey: AX replacement returned");
 
+    // Push an undo entry. We don't try to capture the original text
+    // (kAXSelectedText before our write would now be the rewritten text);
+    // the user can `⌘Z` in their app to revert.
     let model_id = {
         let guard = model_state.downloaded.lock().await;
         guard.keys().next().cloned().unwrap_or_default()
@@ -237,10 +215,10 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         })
         .await;
 
-    // Phase 8: notify. macOS will prompt for notification permission on first
-    // show; if the user denies we silently swallow the error.
+    // Surface a macOS notification with the rewrite's char count, the
+    // template that was used, and the detected context domain.
     let body = format!(
-        "Rewrote {} chars using {} / {}. Press ⌘⇧Z to undo (10s).",
+        "Rewrote {} chars using {} / {}.",
         rewritten.chars().count(),
         template_id,
         profile.domain
@@ -255,8 +233,6 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         tracing::debug!("notification show failed: {err}");
     }
 
-    let _ = (model_id, template_id);
-    let _ = registry::get();
     Ok(())
 }
 
