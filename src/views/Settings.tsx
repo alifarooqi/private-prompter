@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   checkAccessibilityPermission,
   openAccessibilitySettings,
@@ -163,10 +163,13 @@ function GeneralTab({
 
 function HotkeySection() {
   const [config, setConfig] = useState<HotkeyConfig | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [pending, setPending] = useState<HotkeyConfig | null>(null);
-  /** Live preview while recording: modifier keys held so far, no trigger yet. */
-  const [liveModifiers, setLiveModifiers] = useState<string[]>([]);
+  // Recording state as a single discriminated union so the UI always
+  // reflects the latest keypress unambiguously.
+  type RecordingState =
+    | { kind: "idle" }
+    | { kind: "modifiers"; modifiers: string[] }
+    | { kind: "combo"; modifiers: string[]; key: string };
+  const [recording, setRecording] = useState<RecordingState>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -176,34 +179,39 @@ function HotkeySection() {
       .catch((err) => setError(`failed to load: ${err}`));
   }, []);
 
-  // Capture the next modifier+key combo. We listen at the document level
-  // (not on a focused element) so the user can press the combo even when
-  // the focus is on the "Change" button itself.
+  // Track recording as a ref so the document-level listener always sees
+  // the latest value without having to re-bind the listener on every
+  // state change.
+  const recordingRef = useRef(recording);
+  recordingRef.current = recording;
+
   useEffect(() => {
-    if (!recording) return;
     function onKey(e: KeyboardEvent) {
+      const rec = recordingRef.current;
+      if (rec.kind === "idle") return;
+
       if (e.key === "Escape") {
         e.preventDefault();
-        setPending(null);
-        setLiveModifiers([]);
-        setRecording(false);
+        setError(null);
+        setRecording({ kind: "idle" });
         return;
       }
+
       const key = codeToKey(e.code);
       const mods = modifiersFromEvent(e);
 
       if (key === null) {
-        // Modifier-only press. Update the live preview so the user sees
-        // "⌘_", then "⌘⌥_" as they stack up, before the trigger key.
+        // Modifier-only press. Update live preview (e.g. "⌘…" then
+        // "⌘⌥…"). preventDefault stops the OS from interpreting bare
+        // modifier taps (e.g. ⌥ alone on macOS inserts special chars).
         e.preventDefault();
         setError(null);
-        setLiveModifiers(mods);
+        setRecording({ kind: "modifiers", modifiers: mods });
         return;
       }
 
       // Non-modifier key pressed. A complete combo needs at least one
-      // modifier — surface a hint if the user is recording and presses
-      // a bare key.
+      // modifier.
       if (mods.length === 0) {
         e.preventDefault();
         setError("Pick at least one modifier (⌘, ⌥, ⌃, or ⇧).");
@@ -211,23 +219,28 @@ function HotkeySection() {
       }
       e.preventDefault();
       setError(null);
-      setPending({ modifiers: mods, key });
-      setLiveModifiers(mods);
+      setRecording({ kind: "combo", modifiers: mods, key });
     }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [recording]);
+    // Listen at the window level with capture phase so we catch the
+    // event before any focused element (e.g. the Change button) can
+    // swallow it.
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, []);
+
+  const pendingCombo =
+    recording.kind === "combo" ? recording : null;
+  const liveMods =
+    recording.kind === "modifiers" ? recording.modifiers : [];
 
   async function save() {
-    if (!pending) return;
+    if (!pendingCombo) return;
     setBusy(true);
     setError(null);
     try {
-      const info = await setHotkey(pending);
+      const info = await setHotkey(pendingCombo);
       setConfig(info.config);
-      setPending(null);
-      setLiveModifiers([]);
-      setRecording(false);
+      setRecording({ kind: "idle" });
     } catch (err) {
       setError(`Couldn't register: ${err}`);
     } finally {
@@ -241,9 +254,7 @@ function HotkeySection() {
     try {
       const info = await resetHotkey();
       setConfig(info.config);
-      setPending(null);
-      setLiveModifiers([]);
-      setRecording(false);
+      setRecording({ kind: "idle" });
     } catch (err) {
       setError(`Reset failed: ${err}`);
     } finally {
@@ -260,19 +271,20 @@ function HotkeySection() {
 
       <div className="flex items-start gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          {recording ? (
+          {recording.kind !== "idle" ? (
             <>
               <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                {pending ? (
+                {pendingCombo ? (
                   <>
                     Press a new combination…{" "}
                     <span className="text-neutral-500 dark:text-neutral-400">
-                      (saved combo: {displayCombo(pending.modifiers, pending.key)})
+                      (saved combo:{" "}
+                      {displayCombo(pendingCombo.modifiers, pendingCombo.key)})
                     </span>
                   </>
-                ) : liveModifiers.length > 0 ? (
+                ) : liveMods.length > 0 ? (
                   <span>
-                    {displayCombo(liveModifiers, "")}
+                    {displayCombo(liveMods, "")}
                     <span className="ml-1 animate-pulse text-neutral-400">…</span>
                   </span>
                 ) : (
@@ -304,22 +316,19 @@ function HotkeySection() {
         </div>
 
         <div className="flex shrink-0 gap-2">
-          {recording ? (
+          {recording.kind !== "idle" ? (
             <>
               <button
                 onClick={save}
-                disabled={!pending || busy}
+                disabled={!pendingCombo || busy}
                 className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
               >
-                {pending
-                  ? `Save ${displayCombo(pending.modifiers, pending.key)}`
+                {pendingCombo
+                  ? `Save ${displayCombo(pendingCombo.modifiers, pendingCombo.key)}`
                   : "Save"}
               </button>
               <button
-                onClick={() => {
-                  setPending(null);
-                  setRecording(false);
-                }}
+                onClick={() => setRecording({ kind: "idle" })}
                 disabled={busy}
                 className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
               >
@@ -329,7 +338,7 @@ function HotkeySection() {
           ) : (
             <>
               <button
-                onClick={() => setRecording(true)}
+                onClick={() => setRecording({ kind: "modifiers", modifiers: [] })}
                 className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
               >
                 Change
