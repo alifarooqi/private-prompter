@@ -6,7 +6,7 @@
 //! shortcut and registers the new one.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
@@ -110,7 +110,11 @@ impl HotkeyConfig {
     }
 }
 
-static CACHE: OnceLock<HotkeyConfig> = OnceLock::new();
+// Mutex (not OnceLock) so `invalidate()` actually replaces the cached
+// value when the user saves a new combo. OnceLock::set returns Err on
+// the second call, which silently no-ops — exactly the bug that made the
+// Settings display show the original ⌘⌥R after a save.
+static CACHE: Mutex<Option<HotkeyConfig>> = Mutex::new(None);
 
 /// Load the config from disk. Returns the macOS default if no file exists.
 pub fn load() -> HotkeyConfig {
@@ -142,9 +146,13 @@ pub fn load() -> HotkeyConfig {
     }
 }
 
-/// Cache the loaded config so we don't read the disk on every register call.
-pub fn cached() -> &'static HotkeyConfig {
-    CACHE.get_or_init(load)
+/// Read the cached config, loading from disk on first call.
+pub fn cached() -> HotkeyConfig {
+    let mut guard = CACHE.lock().expect("hotkey config mutex poisoned");
+    if guard.is_none() {
+        *guard = Some(load());
+    }
+    guard.as_ref().expect("just initialized").clone()
 }
 
 /// Save the config atomically (write to .tmp, rename).
@@ -166,13 +174,11 @@ pub fn save(cfg: &HotkeyConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Invalidate the cache so the next `cached()` call re-reads from disk.
-/// Called by the `set_hotkey` command after it writes a new config.
+/// Replace the cached value with a fresh disk read. Called by `set_hotkey`
+/// after a successful save so the next `cached()` returns the new combo.
 pub fn invalidate() {
-    // OnceLock has no reset; we leak the old value and replace. We only
-    // call this once per user save, so the leak is bounded.
-    let new = load();
-    let _ = CACHE.set(new);
+    let mut guard = CACHE.lock().expect("hotkey config mutex poisoned");
+    *guard = Some(load());
 }
 
 fn config_path() -> PathBuf {
@@ -205,5 +211,22 @@ mod tests {
             key: "A".into(),
         };
         assert!(cfg.to_shortcut().is_err());
+    }
+
+    #[test]
+    fn invalidate_actually_replaces_cached_value() {
+        // Set the cache to a value, invalidate, confirm the new value sticks.
+        // This is the bug we just fixed — with OnceLock, the second save
+        // was silently ignored.
+        *CACHE.lock().unwrap() = Some(HotkeyConfig {
+            modifiers: vec!["super".into()],
+            key: "A".into(),
+        });
+        invalidate();
+        assert_eq!(
+            cached().key,
+            "R",
+            "after invalidate, cached() should reflect the disk state"
+        );
     }
 }
