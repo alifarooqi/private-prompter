@@ -24,10 +24,6 @@ use undo::SharedUndoState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing once. Logs land at ~/Library/Logs/PrivatePrompter/ via
-    // RUST_LOG env var (default = "info").
-    init_logging();
-
     let model_state: SharedModelState = std::sync::Arc::new(commands::model::ModelState::default());
     let inference_state: SharedInferenceState =
         std::sync::Arc::new(inference::InferenceState::default());
@@ -71,15 +67,19 @@ pub fn run() {
             match app.path().app_data_dir() {
                 Ok(path) => {
                     if let Err(err) = std::fs::create_dir_all(&path) {
-                        tracing::warn!("failed to create app data dir: {err}");
+                        eprintln!("failed to create app data dir: {err}");
                     }
                     model::store::set_data_dir(path);
                 }
                 Err(err) => {
-                    tracing::warn!("app_data_dir unavailable, using temp fallback: {err}");
+                    eprintln!("app_data_dir unavailable, using temp fallback: {err}");
                     model::store::set_data_dir(std::env::temp_dir().join("com.alifarooqi.privateprompter"));
                 }
             }
+
+            // Initialize file logging now that we know where the data dir is.
+            // Daily-rolling logs at <data_dir>/logs/private-prompter.YYYY-MM-DD.log.
+            init_file_logging();
 
             // Re-populate the in-memory "downloaded" map from disk so we
             // don't lose track of models the user pulled on previous runs.
@@ -117,15 +117,61 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Initialize `tracing` with a stderr writer. Phase 9 (Polish) wires this up
-/// to a log file at `~/Library/Logs/PrivatePrompter/`. For now we keep it
-/// simple so the framework is in place.
-fn init_logging() {
+/// Initialize file logging now that the data dir is known. Daily-rolling
+/// files at `<data_dir>/logs/private-prompter.YYYY-MM-DD.log` plus a tee to
+/// stderr so `cargo tauri dev` output is still useful. The worker guard
+/// is leaked into a `Box` so the background writer lives for the full
+/// process lifetime.
+fn init_file_logging() {
+    use std::io::Write;
+    use tracing_appender::non_blocking;
+    use tracing_appender::rolling;
+    use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::EnvFilter;
 
+    let log_dir = model::store::data_dir().join("logs");
+    if let Err(err) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("failed to create logs dir {}: {err}", log_dir.display());
+        return;
+    }
+
+    let appender = rolling::daily(&log_dir, "private-prompter.log");
+    let (file_writer, guard) = non_blocking(appender);
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
+
+    // Tee writer: writes each line to both stderr (for `cargo tauri dev`
+    // visibility) and the rolling log (for production debugging).
+    struct Tee<A, B>(A, B);
+    impl<A: Write, B: Write> Write for Tee<A, B> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = self.0.write(buf)?;
+            let _ = self.1.write(buf);
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()?;
+            self.1.flush()
+        }
+    }
+    struct TeeWriter<A, B>(A, B);
+    impl<'a, A: MakeWriter<'a>, B: MakeWriter<'a>> MakeWriter<'a> for TeeWriter<A, B> {
+        type Writer = Tee<A::Writer, B::Writer>;
+        fn make_writer(&'a self) -> Self::Writer {
+            Tee(self.0.make_writer(), self.1.make_writer())
+        }
+    }
+
+    if tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .try_init();
+        .with_writer(TeeWriter(file_writer, std::io::stderr))
+        .try_init()
+        .is_ok()
+    {
+        // Keep the worker alive for the program's lifetime. The Box::leak
+        // here is intentional and small (one Arc + a thread handle).
+        Box::leak(Box::new(guard));
+        tracing::info!("logging initialized: {}", log_dir.display());
+    }
 }
