@@ -245,7 +245,7 @@ function HotkeySection() {
       </p>
 
       <div className="flex items-start gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
           {recording ? (
             <>
               <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
@@ -266,7 +266,7 @@ function HotkeySection() {
                   {displayCombo(config.modifiers, config.key)}
                 </kbd>
               </div>
-              <div className="text-xs text-neutral-500 dark:text-neutral-400">
+              <div className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
                 Click Change to record a new combination.
               </div>
             </>
