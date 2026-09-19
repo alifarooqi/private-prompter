@@ -244,20 +244,24 @@ function HotkeySection() {
         Highlight text anywhere and press the hotkey to rewrite.
       </p>
 
-      <div className="flex items-center gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <div className="flex-1">
+      <div className="flex items-start gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           {recording ? (
-            <div className="text-sm">
-              <div className="font-medium text-neutral-900 dark:text-neutral-100">
+            <>
+              <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
                 Press a new combination…
               </div>
               <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                Modifiers + one regular key. Press <kbd className="rounded border border-neutral-300 px-1 text-[10px] dark:border-neutral-700">Esc</kbd> to cancel.
+                Modifiers + one regular key. Press{" "}
+                <kbd className="rounded border border-neutral-300 px-1 text-[10px] dark:border-neutral-700">
+                  Esc
+                </kbd>{" "}
+                to cancel.
               </div>
-            </div>
+            </>
           ) : config ? (
-            <div className="text-sm">
-              <div className="font-medium text-neutral-900 dark:text-neutral-100">
+            <>
+              <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
                 <kbd className="rounded border border-neutral-300 bg-neutral-100 px-2 py-1 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-800">
                   {displayCombo(config.modifiers, config.key)}
                 </kbd>
@@ -265,13 +269,13 @@ function HotkeySection() {
               <div className="text-xs text-neutral-500 dark:text-neutral-400">
                 Click Change to record a new combination.
               </div>
-            </div>
+            </>
           ) : (
             <div className="text-sm text-neutral-500">Loading…</div>
           )}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           {recording ? (
             <>
               <button
