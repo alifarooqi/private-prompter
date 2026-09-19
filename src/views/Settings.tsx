@@ -417,6 +417,9 @@ function ModelTab() {
     Record<string, DownloadProgress>
   >({});
   const [pausedById, setPausedById] = useState<Record<string, boolean>>({});
+  const [downloadErrorById, setDownloadErrorById] = useState<
+    Record<string, string | null>
+  >({});
   const [server, setServer] = useState<ServerStatus | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
@@ -483,9 +486,15 @@ function ModelTab() {
   async function onDownload(modelId: string) {
     setBusyId(modelId);
     setPausedById((prev) => ({ ...prev, [modelId]: false }));
+    setDownloadErrorById((prev) => ({ ...prev, [modelId]: null }));
     try {
       await startModelDownload(modelId);
     } catch (err) {
+      // Surface the error in the card so the user knows why the download
+      // went away (HTTP 4xx, network down, URL typo, etc.) rather than
+      // silently returning to the Download button.
+      const message = err instanceof Error ? err.message : String(err);
+      setDownloadErrorById((prev) => ({ ...prev, [modelId]: message }));
       console.error("download failed", err);
     } finally {
       setBusyId(null);
@@ -601,6 +610,11 @@ function ModelTab() {
                     {paused ? "Paused" : progress.state} ·{" "}
                     {formatBytes(progress.bytesDownloaded)} /{" "}
                     {formatBytes(progress.totalBytes)}
+                  </div>
+                )}
+                {downloadErrorById[m.id] && !downloading && !m.downloaded && (
+                  <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                    Download failed: {downloadErrorById[m.id]}
                   </div>
                 )}
               </div>
