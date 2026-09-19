@@ -6,6 +6,8 @@
 //!   * `recommended_model`        — best model for the detected RAM tier.
 //!   * `is_model_downloaded`      — does the GGUF already exist on disk?
 //!   * `start_model_download`     — kick off a streaming download.
+//!   * `pause_model_download`     — pause the in-flight download.
+//!   * `resume_model_download`    — resume a paused download.
 //!   * `cancel_model_download`    — abort the in-flight download.
 
 use std::collections::HashMap;
@@ -16,15 +18,24 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
-use crate::model::downloader::{download_model as downloader_download, CancellationToken};
+use crate::model::downloader::{
+    download_model as downloader_download, CancellationToken, PauseToken,
+};
 use crate::model::ram::{detect_ram_tier, RamTier};
 use crate::model::registry::{self, ModelEntry};
 use crate::model::store as store_paths;
 
+/// Active-download state for one in-flight download. Cancelling, pausing,
+/// and resuming all reach the same handle via `state.active`.
+struct ActiveDownload {
+    model_id: String,
+    cancel: CancellationToken,
+    pause: PauseToken,
+}
+
 #[derive(Default)]
 pub struct ModelState {
-    /// Last-issued cancellation token so we can cancel on user request.
-    pub last_cancel: Mutex<Option<CancellationToken>>,
+    pub active: Mutex<Option<ActiveDownload>>,
     /// `model_id` -> downloaded file path.
     pub downloaded: Mutex<HashMap<String, PathBuf>>,
 }
@@ -92,21 +103,27 @@ pub async fn start_model_download(
 ) -> Result<(), String> {
     let entry = registry::get().find(&model_id).map_err(|e| e.to_string())?;
 
-    // If a download is already running for this or any model, cancel it.
+    // Cancel any in-flight download and install the new handle.
     let cancel = CancellationToken::new();
+    let pause = PauseToken::new();
     {
-        let mut guard = state.last_cancel.lock().await;
+        let mut guard = state.active.lock().await;
         if let Some(prev) = guard.as_ref() {
-            prev.cancel();
+            prev.cancel.cancel();
         }
-        *guard = Some(cancel.clone());
+        *guard = Some(ActiveDownload {
+            model_id: entry.id.clone(),
+            cancel: cancel.clone(),
+            pause: pause.clone(),
+        });
     }
 
-    let downloader_result = downloader_download(&app, entry, cancel.clone()).await;
+    let downloader_result =
+        downloader_download(&app, entry, cancel.clone(), pause.clone()).await;
 
     // Clear the in-flight token regardless of outcome.
     {
-        let mut guard = state.last_cancel.lock().await;
+        let mut guard = state.active.lock().await;
         *guard = None;
     }
 
@@ -119,18 +136,42 @@ pub async fn start_model_download(
 }
 
 #[tauri::command]
+pub async fn pause_model_download(
+    state: State<'_, SharedModelState>,
+) -> Result<(), String> {
+    let guard = state.active.lock().await;
+    if let Some(active) = guard.as_ref() {
+        active.pause.pause();
+        tracing::info!("pausing download of {}", active.model_id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resume_model_download(
+    state: State<'_, SharedModelState>,
+) -> Result<(), String> {
+    let guard = state.active.lock().await;
+    if let Some(active) = guard.as_ref() {
+        active.pause.resume();
+        tracing::info!("resuming download of {}", active.model_id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn cancel_model_download(
     state: State<'_, SharedModelState>,
 ) -> Result<(), String> {
-    let mut guard = state.last_cancel.lock().await;
-    if let Some(cancel) = guard.as_ref() {
-        cancel.cancel();
+    let mut guard = state.active.lock().await;
+    if let Some(active) = guard.take() {
+        active.cancel.cancel();
+        tracing::info!("cancelling download of {}", active.model_id);
     }
     Ok(())
 }
 
 /// Snapshot what GGUF is currently selected as the inference model.
-/// For Phase 2 this is "the most recently downloaded one."
 #[tauri::command]
 pub fn active_model_id(state: State<'_, SharedModelState>) -> Option<String> {
     state

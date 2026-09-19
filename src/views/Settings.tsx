@@ -7,12 +7,15 @@ import {
   type DownloadProgress,
   type ModelSummary,
   type ServerStatus,
+  cancelModelDownload,
   formatBytes,
   inferenceHealth,
   inferenceStatus,
   listModels,
   onDownloadProgress,
+  pauseModelDownload,
   recommendedModelId,
+  resumeModelDownload,
   startInference,
   startModelDownload,
   stopInference,
@@ -413,6 +416,7 @@ function ModelTab() {
   const [progressById, setProgressById] = useState<
     Record<string, DownloadProgress>
   >({});
+  const [pausedById, setPausedById] = useState<Record<string, boolean>>({});
   const [server, setServer] = useState<ServerStatus | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
@@ -478,12 +482,40 @@ function ModelTab() {
 
   async function onDownload(modelId: string) {
     setBusyId(modelId);
+    setPausedById((prev) => ({ ...prev, [modelId]: false }));
     try {
       await startModelDownload(modelId);
     } catch (err) {
       console.error("download failed", err);
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function onPause(modelId: string) {
+    setPausedById((prev) => ({ ...prev, [modelId]: true }));
+    try {
+      await pauseModelDownload();
+    } catch (err) {
+      console.error("pause failed", err);
+    }
+  }
+
+  async function onResume(modelId: string) {
+    setPausedById((prev) => ({ ...prev, [modelId]: false }));
+    try {
+      await resumeModelDownload();
+    } catch (err) {
+      console.error("resume failed", err);
+    }
+  }
+
+  async function onCancel(modelId: string) {
+    setPausedById((prev) => ({ ...prev, [modelId]: false }));
+    try {
+      await cancelModelDownload();
+    } catch (err) {
+      console.error("cancel failed", err);
     }
   }
 
@@ -534,6 +566,7 @@ function ModelTab() {
         {models.map((m) => {
           const progress = progressById[m.id];
           const downloading = busyId === m.id;
+          const paused = pausedById[m.id] === true;
           const isRecommended = m.id === recommendedId;
           return (
             <div
@@ -565,24 +598,32 @@ function ModelTab() {
                 )}
                 {progress && (
                   <div className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                    {progress.state} ·{" "}
+                    {paused ? "Paused" : progress.state} ·{" "}
                     {formatBytes(progress.bytesDownloaded)} /{" "}
                     {formatBytes(progress.totalBytes)}
                   </div>
                 )}
               </div>
-              <div className="ml-3 shrink-0">
+              <div className="ml-3 flex shrink-0 gap-2">
                 {m.downloaded ? (
                   <span className="rounded-md border border-green-200 px-2.5 py-1 text-xs font-medium text-green-700 dark:border-green-800 dark:text-green-300">
                     Ready
                   </span>
                 ) : downloading ? (
-                  <button
-                    disabled
-                    className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium opacity-50 dark:border-neutral-700"
-                  >
-                    Downloading…
-                  </button>
+                  <>
+                    <button
+                      onClick={() => (paused ? onResume(m.id) : onPause(m.id))}
+                      className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+                    >
+                      {paused ? "Resume" : "Pause"}
+                    </button>
+                    <button
+                      onClick={() => onCancel(m.id)}
+                      className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
+                    >
+                      Cancel
+                    </button>
+                  </>
                 ) : (
                   <button
                     onClick={() => onDownload(m.id)}

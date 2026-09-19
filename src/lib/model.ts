@@ -51,6 +51,14 @@ export async function startModelDownload(modelId: string): Promise<void> {
   return invoke<void>("start_model_download", { modelId });
 }
 
+export async function pauseModelDownload(): Promise<void> {
+  return invoke<void>("pause_model_download");
+}
+
+export async function resumeModelDownload(): Promise<void> {
+  return invoke<void>("resume_model_download");
+}
+
 export async function cancelModelDownload(): Promise<void> {
   return invoke<void>("cancel_model_download");
 }

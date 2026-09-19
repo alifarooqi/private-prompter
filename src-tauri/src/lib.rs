@@ -53,6 +53,8 @@ pub fn run() {
             commands::model::recommended_model_id,
             commands::model::is_model_downloaded,
             commands::model::start_model_download,
+            commands::model::pause_model_download,
+            commands::model::resume_model_download,
             commands::model::cancel_model_download,
             commands::model::active_model_id,
             inference::commands::start_inference,

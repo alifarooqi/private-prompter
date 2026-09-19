@@ -5,8 +5,9 @@
 //! events the frontend can listen to via `tauri::AppHandle::emit`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -19,6 +20,7 @@ use super::store;
 use super::{DownloadProgress, DownloadState, ModelError};
 
 const PROGRESS_EVENT: &str = "model://download-progress";
+const PAUSE_POLL: Duration = Duration::from_millis(200);
 
 /// Cheap clone-able cancel handle. Set the inner flag with `cancel()`; the
 /// download loop polls it between chunks.
@@ -41,8 +43,39 @@ impl CancellationToken {
     }
 }
 
+/// Cheap clone-able pause handle. While `is_paused()` returns true, the
+/// download loop sleeps between chunks so we stop accumulating bytes (and
+/// keep the HTTP stream from being torn down while the user thinks about
+/// whether to resume or cancel).
+#[derive(Debug, Clone, Default)]
+pub struct PauseToken {
+    flag: Arc<AtomicBool>,
+}
+
+impl PauseToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn pause(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+}
+
 /// Download a model entry's GGUF to disk. `app` is used to emit progress
 /// events; the caller can listen for `PROGRESS_EVENT` on the JS side.
+///
+/// The caller controls flow via `cancel` (one-shot — cancel means stop
+/// and delete the partial file) and `pause` (toggleable — pause means
+/// keep the partial file, stop accumulating bytes, resume continues).
 ///
 /// On success, returns the absolute path to the downloaded file. On failure
 /// or cancellation, the partial file is removed.
@@ -50,6 +83,7 @@ pub async fn download_model(
     app: &AppHandle,
     entry: &ModelEntry,
     cancel: CancellationToken,
+    pause: PauseToken,
 ) -> Result<PathBuf, ModelError> {
     if cancel.is_cancelled() {
         return Err(ModelError::Cancelled);
@@ -86,11 +120,36 @@ pub async fn download_model(
     let mut downloaded: u64 = 0;
 
     while let Some(chunk) = stream.next().await {
+        // Cancel wins over pause.
         if cancel.is_cancelled() {
             drop(file);
             let _ = tokio::fs::remove_file(&part_path).await;
             return Err(ModelError::Cancelled);
         }
+
+        // While paused, sleep instead of pulling more bytes off the
+        // network. The HTTP stream stays open; on resume we pick up
+        // where we left off without re-requesting from byte 0.
+        if pause.is_paused() {
+            tracing::info!(
+                "model: download paused at {} / {} bytes",
+                downloaded,
+                total
+            );
+            loop {
+                if cancel.is_cancelled() {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    return Err(ModelError::Cancelled);
+                }
+                if !pause.is_paused() {
+                    tracing::info!("model: download resumed");
+                    break;
+                }
+                tokio::time::sleep(PAUSE_POLL).await;
+            }
+        }
+
         let chunk = chunk?;
         hasher.update(&chunk);
         tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
@@ -148,5 +207,30 @@ pub async fn download_model(
 fn emit_progress(app: &AppHandle, progress: &DownloadProgress) {
     if let Err(err) = app.emit(PROGRESS_EVENT, progress) {
         tracing::warn!("failed to emit download progress: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_and_pause_are_independent() {
+        let cancel = CancellationToken::new();
+        let pause = PauseToken::new();
+
+        assert!(!cancel.is_cancelled());
+        assert!(!pause.is_paused());
+
+        pause.pause();
+        assert!(pause.is_paused());
+        assert!(!cancel.is_cancelled());
+
+        pause.resume();
+        assert!(!pause.is_paused());
+
+        cancel.cancel();
+        assert!(cancel.is_cancelled());
+        assert!(!pause.is_paused());
     }
 }
