@@ -9,6 +9,7 @@ import {
   type ServerStatus,
   cancelModelDownload,
   formatBytes,
+  getActiveModel,
   inferenceHealth,
   inferenceStatus,
   listModels,
@@ -16,6 +17,7 @@ import {
   pauseModelDownload,
   recommendedModelId,
   resumeModelDownload,
+  setActiveModel,
   startInference,
   startModelDownload,
   stopInference,
@@ -425,6 +427,7 @@ function ModelTab() {
   const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
     "idle",
   );
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,16 +435,18 @@ function ModelTab() {
 
     async function load() {
       try {
-        const [list, recommended, initialStatus, health] = await Promise.all([
+        const [list, recommended, initialStatus, health, active] = await Promise.all([
           listModels(),
           recommendedModelId(),
           inferenceStatus(),
           inferenceHealth(),
+          getActiveModel(),
         ]);
         if (!cancelled) {
           setModels(list);
           setRecommendedId(recommended);
           setServer({ ...initialStatus, loading: health?.status === "loading" });
+          setActiveModelId(active.id);
         }
         unlisten = await onDownloadProgress((p) => {
           setProgressById((prev) => ({ ...prev, [p.modelId]: p }));
@@ -553,6 +558,21 @@ function ModelTab() {
     }
   }
 
+  async function onPickActive(modelId: string) {
+    try {
+      await setActiveModel(modelId);
+      setActiveModelId(modelId);
+      // If the server was running, restart it on the new model.
+      if (server?.running) {
+        await stopInference();
+        const status = await startInference();
+        setServer({ ...status, loading: true });
+      }
+    } catch (err) {
+      console.error("set active model failed", err);
+    }
+  }
+
   if (models === null) {
     return <p className="text-sm text-neutral-500">Loading model registry…</p>;
   }
@@ -577,6 +597,7 @@ function ModelTab() {
           const downloading = busyId === m.id;
           const paused = pausedById[m.id] === true;
           const isRecommended = m.id === recommendedId;
+          const isActive = activeModelId === m.id;
           return (
             <div
               key={m.id}
@@ -584,10 +605,25 @@ function ModelTab() {
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
+                  {m.downloaded && (
+                    <input
+                      type="radio"
+                      name="active-model"
+                      checked={isActive}
+                      onChange={() => onPickActive(m.id)}
+                      className="mt-0.5"
+                      title="Use this model for inference"
+                    />
+                  )}
                   <div className="text-sm font-medium">{m.display_name}</div>
                   {isRecommended && (
                     <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-200">
                       Recommended
+                    </span>
+                  )}
+                  {isActive && (
+                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">
+                      Active
                     </span>
                   )}
                 </div>

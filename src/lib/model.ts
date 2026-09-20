@@ -30,6 +30,10 @@ export interface ServerStatus {
   loading: boolean;
 }
 
+export interface ActiveModelInfo {
+  id: string | null;
+}
+
 export interface InferenceHealth {
   status: "ok" | "no_model" | "loading";
   model_id: string | null;
@@ -73,6 +77,14 @@ export async function stopInference(): Promise<void> {
 
 export async function inferenceStatus(): Promise<ServerStatus> {
   return invoke<ServerStatus>("inference_status");
+}
+
+export async function getActiveModel(): Promise<ActiveModelInfo> {
+  return invoke<ActiveModelInfo>("get_active_model");
+}
+
+export async function setActiveModel(id: string | null): Promise<void> {
+  return invoke<void>("set_active_model", { id });
 }
 
 /**

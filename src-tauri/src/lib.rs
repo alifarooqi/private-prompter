@@ -3,6 +3,7 @@
 // builds include Windows as a future target.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod active_model;
 mod clipboard;
 mod commands;
 mod context;
@@ -64,6 +65,8 @@ pub fn run() {
             commands::hotkey::get_hotkey,
             commands::hotkey::set_hotkey,
             commands::hotkey::reset_hotkey,
+            commands::active_model::get_active_model,
+            commands::active_model::set_active_model,
         ])
         .setup(move |app| {
             // Resolve the canonical data dir via Tauri (which uses the
