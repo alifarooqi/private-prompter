@@ -1,6 +1,7 @@
 {
   "$schema": "PrivatePrompter model registry schema (informal).",
   "_comment": "Updated whenever a new default model is recommended. Each entry describes one GGUF: where to download it, how big it is, the minimum RAM to run it, and the SHA256 for integrity verification.",
+  "_models_note": "We previously listed Meta's Llama 3.2/3.3 here but those repos are gated on HuggingFace (401 Unauthorized without a license-accepted token). Replaced with the open-weights Qwen 2.5 family at the same size tiers.",
   "models": [
     {
       "id": "qwen2.5-1.5b-instruct-q4-k-m",
@@ -17,28 +18,28 @@
       "_note": "sha256 is a placeholder. Phase 2 release pipeline must verify and replace it."
     },
     {
-      "id": "llama-3.2-3b-instruct-q4-k-m",
-      "display_name": "Llama 3.2 3B Instruct (Q4_K_M)",
-      "publisher": "Meta",
-      "repo": "meta-llama/Llama-3.2-3B-Instruct-GGUF",
-      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-      "url": "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-      "size_bytes": 2019664384,
+      "id": "qwen2.5-3b-instruct-q4-k-m",
+      "display_name": "Qwen 2.5 3B Instruct (Q4_K_M)",
+      "publisher": "Qwen",
+      "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+      "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+      "size_bytes": 2017976320,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "context_length": 131072,
+      "context_length": 32768,
       "min_ram_bytes": 8589934592,
       "recommended_for": ["8-16GB", "16-32GB"]
     },
     {
-      "id": "llama-3.3-8b-instruct-q4-k-m",
-      "display_name": "Llama 3.3 8B Instruct (Q4_K_M)",
-      "publisher": "Meta",
-      "repo": "meta-llama/Llama-3.3-8B-Instruct-GGUF",
-      "file": "Meta-Llama-3.3-8B-Instruct-Q4_K_M.gguf",
-      "url": "https://huggingface.co/meta-llama/Llama-3.3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.3-8B-Instruct-Q4_K_M.gguf",
-      "size_bytes": 4970654816,
+      "id": "qwen2.5-7b-instruct-q4-k-m",
+      "display_name": "Qwen 2.5 7B Instruct (Q4_K_M)",
+      "publisher": "Qwen",
+      "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+      "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
+      "size_bytes": 4684867584,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "context_length": 131072,
+      "context_length": 32768,
       "min_ram_bytes": 17179869184,
       "recommended_for": ["16-32GB", ">=32GB"]
     }
