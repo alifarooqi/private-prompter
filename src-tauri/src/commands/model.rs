@@ -56,6 +56,10 @@ pub struct ModelSummary {
 
 #[tauri::command]
 pub fn list_models(state: State<'_, SharedModelState>) -> Vec<ModelSummary> {
+    // Source of truth is the filesystem, not the in-memory HashMap —
+    // the HashMap can drift if a previous run's file was renamed to .gguf
+    // but the new run's HashMap is empty. Falling back to the file means
+    // "Ready" can never disagree with "the file is on disk".
     let downloaded = state.downloaded.blocking_lock();
     registry::get()
         .list()
@@ -63,6 +67,9 @@ pub fn list_models(state: State<'_, SharedModelState>) -> Vec<ModelSummary> {
         .map(|m| {
             let (display_name, publisher, size_bytes, context_length, min_ram_bytes) =
                 summary_fields(m);
+            let file_path =
+                crate::model::store::model_path(&m.id, &m.file);
+            let file_exists = file_path.exists();
             ModelSummary {
                 id: m.id.clone(),
                 display_name,
@@ -70,7 +77,7 @@ pub fn list_models(state: State<'_, SharedModelState>) -> Vec<ModelSummary> {
                 size_bytes,
                 context_length,
                 min_ram_bytes,
-                downloaded: downloaded.contains_key(&m.id),
+                downloaded: downloaded.contains_key(&m.id) || file_exists,
             }
         })
         .collect()
@@ -92,7 +99,14 @@ pub fn is_model_downloaded(
     state: State<'_, SharedModelState>,
     model_id: String,
 ) -> bool {
-    state.downloaded.blocking_lock().contains_key(&model_id)
+    // Same: prefer the HashMap for speed but fall back to the file.
+    if state.downloaded.blocking_lock().contains_key(&model_id) {
+        return true;
+    }
+    let Some(entry) = registry::get().find(&model_id).ok() else {
+        return false;
+    };
+    crate::model::store::model_path(&entry.id, &entry.file).exists()
 }
 
 #[tauri::command]
