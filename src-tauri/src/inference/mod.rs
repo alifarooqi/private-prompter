@@ -53,8 +53,10 @@ pub enum InferenceError {
     ModelNotDownloaded(String),
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("server not running — start it first")]
-    NotRunning,
+    #[error("rewrite cancelled (hotkey pressed twice)")]
+    Cancelled,
+    #[error("llama-server returned HTTP {status}: {body}")]
+    RequestFailed { status: u16, body: String },
 }
 
 impl serde::Serialize for InferenceError {

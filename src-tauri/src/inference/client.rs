@@ -94,7 +94,7 @@ where
     F: FnMut(CompletionChunk) + Send,
 {
     if cancel.is_cancelled() {
-        return Err(InferenceError::NotRunning);
+        return Err(InferenceError::Cancelled);
     }
 
     let url = format!("{base_url}/completion");
@@ -107,10 +107,14 @@ where
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         tracing::error!(
-            "inference: /completion returned {status} body={}",
+            "inference: /completion returned {} body={}",
+            status,
             body.chars().take(500).collect::<String>()
         );
-        return Err(InferenceError::NotRunning);
+        return Err(InferenceError::RequestFailed {
+            status: status.as_u16(),
+            body: body.chars().take(200).collect::<String>(),
+        });
     }
     tracing::info!("inference: streaming started for prompt ({} chars)", req.prompt.len());
 
@@ -122,7 +126,7 @@ where
 
     while let Some(chunk) = stream.next().await {
         if cancel.is_cancelled() {
-            return Err(InferenceError::NotRunning);
+            return Err(InferenceError::Cancelled);
         }
         let chunk = chunk?;
         raw_bytes += chunk.len() as u64;
