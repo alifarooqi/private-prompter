@@ -180,11 +180,7 @@ fn try_set_selected_text(
     };
 
     let status = unsafe {
-        AXUIElementSetAttributeValue(
-            focused,
-            attr_name("AXSelectedText"),
-            new_ns as *mut AnyObject,
-        )
+        AXUIElementSetAttributeValue(focused, attr_name("AXSelectedText"), new_ns)
     };
     Ok(status == 0)
 }
@@ -207,8 +203,7 @@ fn set_attr_string(focused: *mut AnyObject, attr: &str, value: &str, pool: *mut 
         let c_string = std::ffi::CString::new(value).unwrap_or_default();
         msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
     };
-    let status =
-        unsafe { AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns as *mut AnyObject) };
+    let status = unsafe { AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns) };
     let _ = pool;
     status == 0
 }
@@ -235,7 +230,7 @@ fn set_attr_range(
     };
     let range_value: *mut AnyObject = unsafe {
         let ptr = bytes.as_ptr() as *const c_void;
-        msg_send![ns_value_class, valueWithBytes: ptr objCType: b"{?=q}{?=q}\0".as_ptr() as *const i8]
+        msg_send![ns_value_class, valueWithBytes: ptr objCType: c"{?=q}{?=q}".as_ptr() as *const i8]
     };
     if range_value.is_null() {
         return false;
