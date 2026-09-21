@@ -73,8 +73,12 @@ pub mod commands {
     /// Resolve the model_id the user wants to run inference with. Order:
     ///   1. The user's persisted active_model choice (if still downloaded).
     ///   2. The first model in the downloaded map (HashMap iteration order).
-    fn pick_model_id(model_state: &SharedModelState) -> Option<String> {
-        let downloaded = model_state.downloaded.blocking_lock();
+    ///
+    /// Async because we await the tokio Mutex — calling `blocking_lock()`
+    /// inside a tokio runtime worker panics ("Cannot block the current
+    /// thread from within a runtime").
+    async fn pick_model_id(model_state: &SharedModelState) -> Option<String> {
+        let downloaded = model_state.downloaded.lock().await;
         if let Some(picked) = active_model::cached().id() {
             if downloaded.contains_key(picked) {
                 return Some(picked.to_string());
@@ -91,7 +95,7 @@ pub mod commands {
         state: State<'_, SharedInferenceState>,
         model_state: State<'_, SharedModelState>,
     ) -> Result<ServerStatus, String> {
-        let model_id_opt = pick_model_id(&model_state);
+        let model_id_opt = pick_model_id(&model_state).await;
 
         let Some(model_id) = model_id_opt else {
             return Err("No model downloaded yet".to_string());
