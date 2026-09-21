@@ -83,10 +83,12 @@ pub fn read_selected_text() -> Result<String, SelectedTextError> {
 /// Two strategies, in order:
 ///   1. `kAXSelectedTextAttribute` — preferred for native text fields
 ///      (NSTextField, NSTextArea, browser `<input>` and `<textarea>`).
+///      Some elements report success but don't actually update (notably
+///      browser contenteditable), so we verify with a readback.
 ///   2. Fallback to `kAXValueAttribute` with manual range replacement —
 ///      works on browser `contenteditable` divs (Gemini's prompt, ChatGPT's
-///      composer, Notion's editor) which expose value+range but not
-///      a settable selected-text attribute.
+///      composer, Notion's editor) which expose value+range but don't
+///      actually apply kAXSelectedText writes.
 pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
     let pool = alloc_pool();
     let system = unsafe { AXUIElementCreateSystemWide() };
@@ -97,20 +99,47 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
 
     let focused = copy_attr(system, attr_name("AXFocusedUIElement"))?;
 
-    // Strategy 1: settable AXSelectedText. Works for native text fields
-    // and most browser <input>/<textarea>. Returns -25205 (kAXErrorAttributeUnsupported)
-    // on elements that don't expose it (e.g. contenteditable divs).
-    if try_set_selected_text(focused, new_text, pool)? {
-        drain_pool(pool);
-        return Ok(());
+    // Strategy 1: settable AXSelectedText.
+    let s1 = try_set_selected_text(focused, new_text, pool);
+    tracing::info!(
+        "ax: strategy 1 (AXSelectedText) → {:?}",
+        s1
+    );
+    if let Ok(true) = s1 {
+        // Verify it actually took. Some browser elements return success
+        // but ignore the write.
+        let verify = read_attr_string(focused, "AXSelectedText");
+        match &verify {
+            Ok(current) if current == new_text => {
+                tracing::info!("ax: strategy 1 verified, replacement OK");
+                drain_pool(pool);
+                return Ok(());
+            }
+            Ok(current) => {
+                tracing::warn!(
+                    "ax: strategy 1 reported success but readback differs (got {} chars, expected {})",
+                    current.chars().count(),
+                    new_text.chars().count()
+                );
+                // Fall through to Strategy 2.
+            }
+            Err(err) => {
+                tracing::warn!("ax: strategy 1 readback failed: {err}");
+            }
+        }
     }
 
     // Strategy 2: read full value + selection range, splice new_text in,
-    // set value back, restore caret. Works on contenteditable.
+    // set value back, restore caret.
     let full_value = read_attr_string(focused, "AXValue");
     let range = read_attr_range(focused, "AXSelectedTextRange");
+    tracing::info!(
+        "ax: strategy 2 reads: value len={:?}, range={:?}",
+        full_value.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+        range.as_ref().ok().map(|r| (r.location, r.length))
+    );
 
-    if let (Ok(value), Ok(range)) = (full_value, range) {
+    if let (Ok(value), Ok(range)) = (&full_value, &range) {
         let mut new_value = String::with_capacity(value.len() + new_text.len());
         let start = (range.location as usize).min(value.len());
         let end = ((range.location + range.length) as usize).min(value.len());
@@ -119,12 +148,20 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
         new_value.push_str(&value[end..]);
 
         if set_attr_string(focused, "AXValue", &new_value, pool) {
-            // Restore the caret to right after the inserted text.
             let caret = start + new_text.chars().count();
             set_attr_range(focused, "AXSelectedTextRange", caret, 0, pool);
+            tracing::info!("ax: strategy 2 wrote {} chars", new_value.chars().count());
             drain_pool(pool);
             return Ok(());
+        } else {
+            tracing::warn!("ax: strategy 2 setAttr(AXValue) returned non-zero");
         }
+    } else {
+        tracing::warn!(
+            "ax: strategy 2 missing preconditions: value_ok={}, range_ok={}",
+            full_value.is_ok(),
+            range.is_ok()
+        );
     }
 
     drain_pool(pool);
