@@ -27,7 +27,7 @@ use crate::model::store as store_paths;
 
 /// Active-download state for one in-flight download. Cancelling, pausing,
 /// and resuming all reach the same handle via `state.active`.
-struct ActiveDownload {
+pub(crate) struct ActiveDownload {
     model_id: String,
     cancel: CancellationToken,
     pause: PauseToken,

@@ -11,12 +11,9 @@
 //! permission — and calling `enigo::key()` from that state crashed the app
 //! via a CoreFoundation SIGSEGV. This implementation fixes both.
 
-use objc2::ffi::NSInteger;
 use objc2::runtime::{AnyClass, AnyObject, Bool};
-use objc2::{msg_send, ClassType};
+use objc2::msg_send;
 use serde::Serialize;
-use std::ffi::c_void;
-use std::ptr::null;
 
 #[derive(Serialize)]
 pub struct PermissionStatus {
@@ -25,7 +22,6 @@ pub struct PermissionStatus {
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
-#[link(name = "Foundation", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrustedWithOptions(options: *const AnyObject) -> Bool;
 }
@@ -90,7 +86,7 @@ fn is_process_trusted(prompt: bool) -> Result<bool, String> {
         let dict: *mut AnyObject = if prompt {
             let key_nsstring: *mut AnyObject = msg_send![
                 ns_string_class,
-                stringWithUTF8String: b"AXTrustedCheckOptionPrompt\0".as_ptr()
+                stringWithUTF8String: c"AXTrustedCheckOptionPrompt".as_ptr()
             ];
             let true_number: *mut AnyObject = msg_send![ns_number_class, numberWithBool: true];
             let objects: [*const AnyObject; 2] =
@@ -114,17 +110,7 @@ fn is_process_trusted(prompt: bool) -> Result<bool, String> {
     }
 }
 
-// Quiet the unused-import warning for `NSInteger` / `c_void` / `null` —
-// they're here to keep the file's intent obvious for future readers who may
-// add new FFI calls.
-#[allow(dead_code)]
-type _Unused = (
-    NSInteger,
-    *const c_void,
-    *const AnyObject,
-    Option<extern "C" fn()>,
-);
-const _UNUSED_NULL: *const c_void = null();
+// (No FFI placeholder needed — every import is used above.)
 
 #[cfg(test)]
 mod tests {

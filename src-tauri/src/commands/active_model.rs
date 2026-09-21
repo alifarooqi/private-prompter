@@ -7,7 +7,7 @@
 
 use tauri::State;
 
-use crate::active_model::{self, ActiveModel};
+use crate::active_model::{self};
 use crate::commands::model::SharedModelState;
 
 #[tauri::command]

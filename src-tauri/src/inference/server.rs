@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::process::{Child, Command};
 
 use super::{InferenceError, ServerStatus};

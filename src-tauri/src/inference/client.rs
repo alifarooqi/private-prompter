@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::Emitter;
 
 use super::InferenceError;
 

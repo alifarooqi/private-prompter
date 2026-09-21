@@ -3,6 +3,14 @@
 // builds include Windows as a future target.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Many modules scaffold types and helpers ahead of the consumer wiring
+// (e.g. the alternative `Failed` download state, the `complete_blocking`
+// non-streaming variant, the `TemplateSummary` editor-preview helper).
+// Treating those as errors would force us to either wire them in early
+// or rip them out — both worse than letting the MVP flag them as
+// intentionally scaffolded. Phase 9 will either consume them or delete.
+#![allow(dead_code)]
+
 mod active_model;
 mod clipboard;
 mod commands;

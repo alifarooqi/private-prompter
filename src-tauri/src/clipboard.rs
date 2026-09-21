@@ -22,8 +22,8 @@
 //! that's exactly right.
 
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{msg_send, ClassType};
-use std::ffi::{c_void, CStr};
+use objc2::msg_send;
+use std::ffi::c_void;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelectedTextError {
@@ -225,7 +225,7 @@ fn set_attr_range(
     };
     // AXValueRef range is encoded as two i64s in a single NSValue. We
     // create the value with the bytes layout directly.
-    let bytes: [u8; 16] = unsafe {
+    let bytes: [u8; 16] = {
         let loc = (location as i64).to_ne_bytes();
         let len = (length as i64).to_ne_bytes();
         let mut b = [0u8; 16];
@@ -241,7 +241,7 @@ fn set_attr_range(
         return false;
     }
     let status = unsafe {
-        AXUIElementSetAttributeValue(focused, attr_name(attr), range_value as *mut AnyObject)
+        AXUIElementSetAttributeValue(focused, attr_name(attr), range_value)
     };
     let _ = pool;
     status == 0

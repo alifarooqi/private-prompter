@@ -16,12 +16,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
 use super::model::store as store_paths;
-
-pub use client::{CompletionChunk, CompletionRequest};
 
 /// Bundle of the sidecar state we share with the frontend.
 #[derive(Default)]
