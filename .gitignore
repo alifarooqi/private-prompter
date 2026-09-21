@@ -63,6 +63,9 @@ pnpm-debug.log*
 *.tsbuildinfo
 *.d.ts
 !.d.ts
+# src/vite-env.d.ts contains the CSS/asset module declarations that make
+# `tsc --noEmit` and the typecheck step pass — keep it tracked.
+# (The blanket `*.d.ts` ignore above would otherwise hide it.)
 
 # Python (used by build scripts in some setups)
 __pycache__/

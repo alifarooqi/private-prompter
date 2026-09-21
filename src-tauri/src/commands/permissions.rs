@@ -11,8 +11,8 @@
 //! permission — and calling `enigo::key()` from that state crashed the app
 //! via a CoreFoundation SIGSEGV. This implementation fixes both.
 
-use objc2::runtime::{AnyClass, AnyObject, Bool};
 use objc2::msg_send;
+use objc2::runtime::{AnyClass, AnyObject, Bool};
 use serde::Serialize;
 
 #[derive(Serialize)]

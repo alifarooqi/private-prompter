@@ -21,8 +21,8 @@
 //! For our use case (replacing selection with a fresh rewritten string)
 //! that's exactly right.
 
-use objc2::runtime::{AnyClass, AnyObject};
 use objc2::msg_send;
+use objc2::runtime::{AnyClass, AnyObject};
 use std::ffi::c_void;
 
 #[derive(Debug, thiserror::Error)]
@@ -240,9 +240,7 @@ fn set_attr_range(
     if range_value.is_null() {
         return false;
     }
-    let status = unsafe {
-        AXUIElementSetAttributeValue(focused, attr_name(attr), range_value)
-    };
+    let status = unsafe { AXUIElementSetAttributeValue(focused, attr_name(attr), range_value) };
     let _ = pool;
     status == 0
 }

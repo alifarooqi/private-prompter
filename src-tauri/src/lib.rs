@@ -2,7 +2,6 @@
 // We keep it because Tauri's standard scaffold uses it and Tauri v2 cross-platform
 // builds include Windows as a future target.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 // Many modules scaffold types and helpers ahead of the consumer wiring
 // (e.g. the alternative `Failed` download state, the `complete_blocking`
 // non-streaming variant, the `TemplateSummary` editor-preview helper).
