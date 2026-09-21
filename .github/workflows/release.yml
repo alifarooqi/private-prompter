@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-sidecar:
+    name: Build llama.cpp sidecar
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          brew install cmake ninja
+
+      - name: Build llama-server for both Apple Silicon and Intel
+        run: ./scripts/build-sidecar.sh
+
+      - name: Upload sidecar artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-binaries
+          path: |
+            src-tauri/binaries/llama-server-aarch64-apple-darwin
+            src-tauri/binaries/llama-server-x86_64-apple-darwin
+
+  build-tauri:
+    name: Build .dmg (signed + notarized)
+    needs: build-sidecar
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            artifact_name: PrivatePrompter-arm64
+          - target: x86_64-apple-darwin
+            artifact_name: PrivatePrompter-x64
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download sidecar artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sidecar-binaries
+          path: src-tauri/binaries
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Import signing certificate
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+      - name: Build .dmg
+        run: npm run tauri build -- --target ${{ matrix.target }}
+
+      - name: Notarize .dmg
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: ./scripts/notarize.sh
+
+      - name: Locate built bundle
+        id: locate
+        run: |
+          DMG=$(find src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name '*.dmg' | head -1)
+          echo "dmg=$DMG" >> $GITHUB_OUTPUT
+
+      - name: Generate updater manifest
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          DMG=$(find src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name '*.dmg' | head -1)
+          SIGNATURE=$(npm run tauri signer sign -- "$DMG" 2>/dev/null | tail -1)
+          cat > src-tauri/latest.json <<EOF
+          {
+            "version": "${TAG#v}",
+            "notes": "See CHANGELOG.md",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": { "signature": "$SIGNATURE", "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename $DMG)" },
+              "darwin-x86_64":  { "signature": "$SIGNATURE", "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename $DMG)" }
+            }
+          }
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ steps.locate.outputs.dmg }}
+
+  publish:
+    name: Publish GitHub Release
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.json

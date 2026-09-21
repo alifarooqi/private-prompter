@@ -1,52 +1,41 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { checkAccessibilityPermission } from "./lib/permissions";
+import { Onboarding } from "./views/Onboarding";
+import { Settings } from "./views/Settings";
+
+type View = "loading" | "onboarding" | "settings";
 
 /**
- * Phase 0 placeholder UI. Replaced in Phase 1 by a tray-on-menu + settings window.
+ * Phase 1 view router. Decides between onboarding and settings based on the
+ * Accessibility permission, then renders the right view.
+ *
+ * The "about" view is reached from Settings → About in Phase 1.x; for now
+ * it's a placeholder section inside Settings.
  */
 export default function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const [view, setView] = useState<View>("loading");
 
   useEffect(() => {
     document.title = "PrivatePrompter";
+    refresh();
   }, []);
 
-  return (
-    <main className="container">
-      <h1>PrivatePrompter</h1>
-      <p>
-        Privacy-first, on-device prompt optimizer for macOS. Highlight text,
-        press <kbd>⌘⇧Space</kbd>, get a better prompt — without your text ever
-        leaving your machine.
-      </p>
+  async function refresh() {
+    const status = await checkAccessibilityPermission(false);
+    setView(status.granted ? "settings" : "onboarding");
+  }
 
-      <p>
-        <em>
-          Placeholder UI. Phase 1 swaps this for a menu-bar app with an onboarding
-          flow and settings window.
-        </em>
-      </p>
+  if (view === "loading") {
+    return (
+      <div className="flex h-full items-center justify-center bg-neutral-50 text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
+        <p className="text-sm">Loading…</p>
+      </div>
+    );
+  }
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Test Rust IPC</button>
-      </form>
-      {greetMsg && <p>{greetMsg}</p>}
-    </main>
-  );
+  if (view === "onboarding") {
+    return <Onboarding onComplete={() => setView("settings")} />;
+  }
+
+  return <Settings onRevoked={() => setView("onboarding")} />;
 }

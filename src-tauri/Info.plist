@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Tauri v2 merges the keys in this file into the Info.plist it generates for
+  the macOS .app bundle. Only the keys we need to add are present here.
+
+  References:
+    - https://developer.apple.com/documentation/bundleresources/information_property_list/
+  - https://tauri.app/distribute/macos/
+-->
+<plist version="1.0">
+<dict>
+    <!--
+        LSUIElement = true runs PrivatePrompter as a "UI element" / agent app —
+        no Dock icon, no menu bar at the top of the screen. The app lives in
+        the menu bar (NSStatusItem) only, which is what we want.
+    -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!--
+        Required so macOS shows the user a permission prompt the first time we
+        use Accessibility APIs (which we need to send synthetic Cmd+C / Cmd+V
+        keystrokes to other applications).
+    -->
+    <key>NSAccessibilityUsageDescription</key>
+    <string>PrivatePrompter needs Accessibility access so it can copy highlighted text and paste the rewritten prompt back into the active application when you press the global hotkey.</string>
+
+    <!--
+        Required so macOS shows a permission prompt the first time we ask
+        System Events for the frontmost application's name (Tier 1 of our
+        context detection pipeline).
+    -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>PrivatePrompter reads the name of the active application to choose the right prompt style (for example, "coding" inside a code editor, "writing" in a text document).</string>
+
+    <!--
+        The minimum macOS version we support. macOS 11 (Big Sur) is where the
+        current visual aesthetic we target was introduced.
+    -->
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+</dict>
+</plist>

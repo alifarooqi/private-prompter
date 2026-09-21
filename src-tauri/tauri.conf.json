@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PrivatePrompter",
   "version": "0.1.0",
-  "identifier": "com.privateprompter.app",
+  "identifier": "com.alifarooqi.privateprompter",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,13 +12,24 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "PrivatePrompter",
-        "width": 800,
-        "height": 600
+        "width": 760,
+        "height": 520,
+        "minWidth": 600,
+        "minHeight": 400,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "url": "index.html"
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -30,6 +41,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "_comment": "Generate a real key with `npm run tauri signer generate` before tagging a release. The current value is a placeholder so the plugin initializes; signature verification will fail until replaced.",
+      "endpoints": [
+        "https://github.com/<owner>/private-prompter/releases/latest/download/latest.json"
+      ],
+      "pubkey": "PLACEHOLDER_REPLACE_WITH_OUTPUT_OF_tauri_signer_generate"
+    }
   }
 }
