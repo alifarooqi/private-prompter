@@ -16,9 +16,7 @@ mod tray;
 mod undo;
 
 use commands::model::SharedModelState;
-use commands::permissions::{
-    check_accessibility_permission, open_accessibility_settings,
-};
+use commands::permissions::{check_accessibility_permission, open_accessibility_settings};
 use hotkey::{ActiveRewrite, SharedActiveRewrite};
 use inference::SharedInferenceState;
 use tauri::Manager;
@@ -82,7 +80,9 @@ pub fn run() {
                 }
                 Err(err) => {
                     eprintln!("app_data_dir unavailable, using temp fallback: {err}");
-                    model::store::set_data_dir(std::env::temp_dir().join("com.alifarooqi.privateprompter"));
+                    model::store::set_data_dir(
+                        std::env::temp_dir().join("com.alifarooqi.privateprompter"),
+                    );
                 }
             }
 
@@ -113,7 +113,9 @@ pub fn run() {
             }
 
             // Register the global hotkey.
-            if let Err(err) = hotkey::register(app.handle(), undo_state.clone(), active_rewrite.clone()) {
+            if let Err(err) =
+                hotkey::register(app.handle(), undo_state.clone(), active_rewrite.clone())
+            {
                 tracing::warn!("failed to register global hotkey: {err}");
             }
 

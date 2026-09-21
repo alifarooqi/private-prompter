@@ -4,8 +4,8 @@
 //! placeholder rewrite in the hotkey module; that placeholder is now a
 //! call into `complete_streaming`.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,10 @@ where
             body: body.chars().take(200).collect::<String>(),
         });
     }
-    tracing::info!("inference: streaming started for prompt ({} chars)", req.prompt.len());
+    tracing::info!(
+        "inference: streaming started for prompt ({} chars)",
+        req.prompt.len()
+    );
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();

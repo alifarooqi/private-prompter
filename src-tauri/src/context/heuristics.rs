@@ -16,11 +16,7 @@ pub fn match_url(url: &str) -> Option<ContextProfile> {
     {
         Some(ContextProfile {
             domain: "coding".to_string(),
-            tools: vec![
-                "git".to_string(),
-                "shell".to_string(),
-                "tests".to_string(),
-            ],
+            tools: vec!["git".to_string(), "shell".to_string(), "tests".to_string()],
             tone: "concise-technical".to_string(),
             raw_evidence: format!("url matched coding: {url}"),
         })

@@ -49,7 +49,8 @@ pub fn builtin_templates() -> Vec<TemplateSummary> {
             id: "prompt-master".to_string(),
             display_name: "Prompt Master (default)".to_string(),
             source: TemplateSource::Builtin,
-            description: "Transforms raw thought into a structured prompt using XML tags.".to_string(),
+            description: "Transforms raw thought into a structured prompt using XML tags."
+                .to_string(),
         },
         TemplateSummary {
             id: "universal".to_string(),

@@ -103,9 +103,8 @@ pub mod commands {
             return Err("No model downloaded yet".to_string());
         };
         let entry = registry::get().find(&model_id).map_err(|e| e.to_string())?;
-        let gguf = gguf_path(&entry.id, &entry.file).ok_or_else(|| {
-            format!("GGUF not on disk for model {}", entry.id)
-        })?;
+        let gguf = gguf_path(&entry.id, &entry.file)
+            .ok_or_else(|| format!("GGUF not on disk for model {}", entry.id))?;
 
         let mut guard = state.inner.lock().await;
         if let Some(existing) = guard.as_mut() {
@@ -123,9 +122,7 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub async fn stop_inference(
-        state: State<'_, SharedInferenceState>,
-    ) -> Result<(), String> {
+    pub async fn stop_inference(state: State<'_, SharedInferenceState>) -> Result<(), String> {
         let mut guard = state.inner.lock().await;
         if let Some(server) = guard.take() {
             let _ = server.stop().await;
@@ -199,6 +196,10 @@ pub mod commands {
 
     fn gguf_path(model_id: &str, file: &str) -> Option<PathBuf> {
         let p = store_paths::model_path(model_id, file);
-        if p.exists() { Some(p) } else { None }
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
     }
 }

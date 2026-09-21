@@ -101,10 +101,7 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
 
     // Strategy 1: settable AXSelectedText.
     let s1 = try_set_selected_text(focused, new_text, pool);
-    tracing::info!(
-        "ax: strategy 1 (AXSelectedText) → {:?}",
-        s1
-    );
+    tracing::info!("ax: strategy 1 (AXSelectedText) → {:?}", s1);
     if let Ok(true) = s1 {
         // Verify it actually took. Some browser elements return success
         // but ignore the write.
@@ -202,12 +199,7 @@ fn read_attr_range(focused: *mut AnyObject, attr: &str) -> Result<AxRange, Selec
     Ok(ax_range_from_ns_value(raw))
 }
 
-fn set_attr_string(
-    focused: *mut AnyObject,
-    attr: &str,
-    value: &str,
-    pool: *mut AnyObject,
-) -> bool {
+fn set_attr_string(focused: *mut AnyObject, attr: &str, value: &str, pool: *mut AnyObject) -> bool {
     let Some(ns_string_class) = AnyClass::get("NSString") else {
         return false;
     };
@@ -215,9 +207,8 @@ fn set_attr_string(
         let c_string = std::ffi::CString::new(value).unwrap_or_default();
         msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
     };
-    let status = unsafe {
-        AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns as *mut AnyObject)
-    };
+    let status =
+        unsafe { AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns as *mut AnyObject) };
     let _ = pool;
     status == 0
 }

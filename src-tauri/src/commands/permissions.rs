@@ -82,7 +82,8 @@ fn is_process_trusted(prompt: bool) -> Result<bool, String> {
         let ns_string_class = AnyClass::get("NSString").ok_or("NSString class not found")?;
         let ns_number_class = AnyClass::get("NSNumber").ok_or("NSNumber class not found")?;
         let ns_dict_class = AnyClass::get("NSDictionary").ok_or("NSDictionary class not found")?;
-        let ns_pool_class = AnyClass::get("NSAutoreleasePool").ok_or("NSAutoreleasePool class not found")?;
+        let ns_pool_class =
+            AnyClass::get("NSAutoreleasePool").ok_or("NSAutoreleasePool class not found")?;
 
         let pool: *mut AnyObject = msg_send![ns_pool_class, new];
 
@@ -92,7 +93,8 @@ fn is_process_trusted(prompt: bool) -> Result<bool, String> {
                 stringWithUTF8String: b"AXTrustedCheckOptionPrompt\0".as_ptr()
             ];
             let true_number: *mut AnyObject = msg_send![ns_number_class, numberWithBool: true];
-            let objects: [*const AnyObject; 2] = [true_number as *const AnyObject, std::ptr::null()];
+            let objects: [*const AnyObject; 2] =
+                [true_number as *const AnyObject, std::ptr::null()];
             let keys: [*const AnyObject; 2] = [key_nsstring as *const AnyObject, std::ptr::null()];
             msg_send![
                 ns_dict_class,
@@ -116,7 +118,12 @@ fn is_process_trusted(prompt: bool) -> Result<bool, String> {
 // they're here to keep the file's intent obvious for future readers who may
 // add new FFI calls.
 #[allow(dead_code)]
-type _Unused = (NSInteger, *const c_void, *const AnyObject, Option<extern "C" fn()>);
+type _Unused = (
+    NSInteger,
+    *const c_void,
+    *const AnyObject,
+    Option<extern "C" fn()>,
+);
 const _UNUSED_NULL: *const c_void = null();
 
 #[cfg(test)]

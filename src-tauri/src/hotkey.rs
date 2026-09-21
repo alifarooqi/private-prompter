@@ -17,8 +17,8 @@
 //! A second hotkey press while a rewrite is in flight cancels it (the
 //! `ActiveRewrite` cancel flag is checked between streaming chunks).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -57,9 +57,9 @@ pub fn register<R: tauri::Runtime>(
     let inference = Arc::clone(&*inference_state);
     let active_for_cb = active.clone();
 
-    let shortcut = hotkey_config::cached().to_shortcut().map_err(|err| {
-        tauri::Error::from(anyhow::anyhow!("hotkey config invalid: {err}"))
-    })?;
+    let shortcut = hotkey_config::cached()
+        .to_shortcut()
+        .map_err(|err| tauri::Error::from(anyhow::anyhow!("hotkey config invalid: {err}")))?;
 
     app.global_shortcut()
         .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
@@ -77,7 +77,8 @@ pub fn register<R: tauri::Runtime>(
                 let active = active_for_cb.clone();
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(err) = run_rewrite(&app_handle, undo, model, inference, active).await {
+                    if let Err(err) = run_rewrite(&app_handle, undo, model, inference, active).await
+                    {
                         tracing::warn!("rewrite failed: {err}");
                     }
                 });
@@ -121,7 +122,9 @@ pub fn reregister<R: tauri::Runtime>(
     let inference = Arc::clone(&*inference_state);
     let active_for_cb = active.clone();
 
-    let new_shortcut = cfg.to_shortcut().map_err(|e| format!("invalid combo: {e}"))?;
+    let new_shortcut = cfg
+        .to_shortcut()
+        .map_err(|e| format!("invalid combo: {e}"))?;
     app.global_shortcut()
         .on_shortcut(new_shortcut, move |app_handle, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
@@ -135,8 +138,7 @@ pub fn reregister<R: tauri::Runtime>(
                 let active = active_for_cb.clone();
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(err) =
-                        run_rewrite(&app_handle, undo, model, inference, active).await
+                    if let Err(err) = run_rewrite(&app_handle, undo, model, inference, active).await
                     {
                         tracing::warn!("rewrite failed: {err}");
                     }
@@ -182,7 +184,14 @@ async fn run_rewrite<R: tauri::Runtime>(
         }
     }
 
-    let result = run_rewrite_inner(app, undo_state, model_state, inference_state, active.clone()).await;
+    let result = run_rewrite_inner(
+        app,
+        undo_state,
+        model_state,
+        inference_state,
+        active.clone(),
+    )
+    .await;
     active.in_flight.store(false, Ordering::SeqCst);
     result
 }
@@ -194,8 +203,7 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     inference_state: SharedInferenceState,
     active: SharedActiveRewrite,
 ) -> Result<(), String> {
-    let raw = clipboard::read_selected_text()
-        .map_err(|e| format!("read selection failed: {e}"))?;
+    let raw = clipboard::read_selected_text().map_err(|e| format!("read selection failed: {e}"))?;
     if raw.trim().is_empty() {
         return Err("no text selected".to_string());
     }

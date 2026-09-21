@@ -67,8 +67,7 @@ pub fn list_models(state: State<'_, SharedModelState>) -> Vec<ModelSummary> {
         .map(|m| {
             let (display_name, publisher, size_bytes, context_length, min_ram_bytes) =
                 summary_fields(m);
-            let file_path =
-                crate::model::store::model_path(&m.id, &m.file);
+            let file_path = crate::model::store::model_path(&m.id, &m.file);
             let file_exists = file_path.exists();
             ModelSummary {
                 id: m.id.clone(),
@@ -95,10 +94,7 @@ pub fn recommended_model_id() -> String {
 }
 
 #[tauri::command]
-pub fn is_model_downloaded(
-    state: State<'_, SharedModelState>,
-    model_id: String,
-) -> bool {
+pub fn is_model_downloaded(state: State<'_, SharedModelState>, model_id: String) -> bool {
     // Same: prefer the HashMap for speed but fall back to the file.
     if state.downloaded.blocking_lock().contains_key(&model_id) {
         return true;
@@ -132,8 +128,7 @@ pub async fn start_model_download(
         });
     }
 
-    let downloader_result =
-        downloader_download(&app, entry, cancel.clone(), pause.clone()).await;
+    let downloader_result = downloader_download(&app, entry, cancel.clone(), pause.clone()).await;
 
     // Clear the in-flight token regardless of outcome.
     {
@@ -150,9 +145,7 @@ pub async fn start_model_download(
 }
 
 #[tauri::command]
-pub async fn pause_model_download(
-    state: State<'_, SharedModelState>,
-) -> Result<(), String> {
+pub async fn pause_model_download(state: State<'_, SharedModelState>) -> Result<(), String> {
     let guard = state.active.lock().await;
     if let Some(active) = guard.as_ref() {
         active.pause.pause();
@@ -162,9 +155,7 @@ pub async fn pause_model_download(
 }
 
 #[tauri::command]
-pub async fn resume_model_download(
-    state: State<'_, SharedModelState>,
-) -> Result<(), String> {
+pub async fn resume_model_download(state: State<'_, SharedModelState>) -> Result<(), String> {
     let guard = state.active.lock().await;
     if let Some(active) = guard.as_ref() {
         active.pause.resume();
@@ -174,9 +165,7 @@ pub async fn resume_model_download(
 }
 
 #[tauri::command]
-pub async fn cancel_model_download(
-    state: State<'_, SharedModelState>,
-) -> Result<(), String> {
+pub async fn cancel_model_download(state: State<'_, SharedModelState>) -> Result<(), String> {
     let mut guard = state.active.lock().await;
     if let Some(active) = guard.take() {
         active.cancel.cancel();
@@ -188,12 +177,7 @@ pub async fn cancel_model_download(
 /// Snapshot what GGUF is currently selected as the inference model.
 #[tauri::command]
 pub fn active_model_id(state: State<'_, SharedModelState>) -> Option<String> {
-    state
-        .downloaded
-        .blocking_lock()
-        .keys()
-        .next()
-        .cloned()
+    state.downloaded.blocking_lock().keys().next().cloned()
 }
 
 /// Scan the models directory and populate the `downloaded` map. Called

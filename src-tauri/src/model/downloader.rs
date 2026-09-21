@@ -5,8 +5,8 @@
 //! events the frontend can listen to via `tauri::AppHandle::emit`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -139,8 +139,7 @@ pub async fn download_model(
 
     let response = request.send().await?.error_for_status()?;
     let status = response.status();
-    let resumed_from_existing = status == reqwest::StatusCode::PARTIAL_CONTENT
-        && resume_offset > 0;
+    let resumed_from_existing = status == reqwest::StatusCode::PARTIAL_CONTENT && resume_offset > 0;
 
     // If the server replied 200 OK while we asked for a Range, it means
     // the server doesn't support resume — discard the partial and restart
@@ -184,11 +183,7 @@ pub async fn download_model(
         // network. The HTTP stream stays open; on resume we pick up
         // where we left off without re-requesting from byte 0.
         if pause.is_paused() {
-            tracing::info!(
-                "model: download paused at {} / {} bytes",
-                downloaded,
-                total
-            );
+            tracing::info!("model: download paused at {} / {} bytes", downloaded, total);
             loop {
                 if cancel.is_cancelled() {
                     drop(file);
