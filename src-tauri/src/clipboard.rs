@@ -179,9 +179,8 @@ fn try_set_selected_text(
         msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
     };
 
-    let status = unsafe {
-        AXUIElementSetAttributeValue(focused, attr_name("AXSelectedText"), new_ns)
-    };
+    let status =
+        unsafe { AXUIElementSetAttributeValue(focused, attr_name("AXSelectedText"), new_ns) };
     Ok(status == 0)
 }
 
