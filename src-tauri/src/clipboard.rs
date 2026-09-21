@@ -23,6 +23,7 @@
 
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{msg_send, ClassType};
+use std::ffi::{c_void, CStr};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelectedTextError {
@@ -78,6 +79,14 @@ pub fn read_selected_text() -> Result<String, SelectedTextError> {
 
 /// Replace the currently selected text with `new_text`. The focused element
 /// must be an editable text field; otherwise `NotSettable` is returned.
+///
+/// Two strategies, in order:
+///   1. `kAXSelectedTextAttribute` — preferred for native text fields
+///      (NSTextField, NSTextArea, browser `<input>` and `<textarea>`).
+///   2. Fallback to `kAXValueAttribute` with manual range replacement —
+///      works on browser `contenteditable` divs (Gemini's prompt, ChatGPT's
+///      composer, Notion's editor) which expose value+range but not
+///      a settable selected-text attribute.
 pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
     let pool = alloc_pool();
     let system = unsafe { AXUIElementCreateSystemWide() };
@@ -87,6 +96,46 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
     }
 
     let focused = copy_attr(system, attr_name("AXFocusedUIElement"))?;
+
+    // Strategy 1: settable AXSelectedText. Works for native text fields
+    // and most browser <input>/<textarea>. Returns -25205 (kAXErrorAttributeUnsupported)
+    // on elements that don't expose it (e.g. contenteditable divs).
+    if try_set_selected_text(focused, new_text, pool)? {
+        drain_pool(pool);
+        return Ok(());
+    }
+
+    // Strategy 2: read full value + selection range, splice new_text in,
+    // set value back, restore caret. Works on contenteditable.
+    let full_value = read_attr_string(focused, "AXValue");
+    let range = read_attr_range(focused, "AXSelectedTextRange");
+
+    if let (Ok(value), Ok(range)) = (full_value, range) {
+        let mut new_value = String::with_capacity(value.len() + new_text.len());
+        let start = (range.location as usize).min(value.len());
+        let end = ((range.location + range.length) as usize).min(value.len());
+        new_value.push_str(&value[..start]);
+        new_value.push_str(new_text);
+        new_value.push_str(&value[end..]);
+
+        if set_attr_string(focused, "AXValue", &new_value, pool) {
+            // Restore the caret to right after the inserted text.
+            let caret = start + new_text.chars().count();
+            set_attr_range(focused, "AXSelectedTextRange", caret, 0, pool);
+            drain_pool(pool);
+            return Ok(());
+        }
+    }
+
+    drain_pool(pool);
+    Err(SelectedTextError::NotSettable)
+}
+
+fn try_set_selected_text(
+    focused: *mut AnyObject,
+    new_text: &str,
+    pool: *mut AnyObject,
+) -> Result<bool, SelectedTextError> {
     let ns_string_class = AnyClass::get("NSString").ok_or_else(|| {
         drain_pool(pool);
         SelectedTextError::Ax("NSString class not found".to_string())
@@ -103,14 +152,104 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
             new_ns as *mut AnyObject,
         )
     };
-    drain_pool(pool);
+    Ok(status == 0)
+}
 
-    // kAXErrorSuccess = 0; non-zero means the attribute isn't settable on
-    // this element (window vs editable text field, etc.).
-    if status != 0 {
-        return Err(SelectedTextError::NotSettable);
+fn read_attr_string(focused: *mut AnyObject, attr: &str) -> Result<String, SelectedTextError> {
+    let raw = copy_attr(focused, attr_name(attr))?;
+    Ok(cf_string_to_string(raw))
+}
+
+fn read_attr_range(focused: *mut AnyObject, attr: &str) -> Result<AxRange, SelectedTextError> {
+    let raw = copy_attr(focused, attr_name(attr))?;
+    Ok(ax_range_from_ns_value(raw))
+}
+
+fn set_attr_string(
+    focused: *mut AnyObject,
+    attr: &str,
+    value: &str,
+    pool: *mut AnyObject,
+) -> bool {
+    let Some(ns_string_class) = AnyClass::get("NSString") else {
+        return false;
+    };
+    let new_ns: *mut AnyObject = unsafe {
+        let c_string = std::ffi::CString::new(value).unwrap_or_default();
+        msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
+    };
+    let status = unsafe {
+        AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns as *mut AnyObject)
+    };
+    let _ = pool;
+    status == 0
+}
+
+fn set_attr_range(
+    focused: *mut AnyObject,
+    attr: &str,
+    location: usize,
+    length: usize,
+    pool: *mut AnyObject,
+) -> bool {
+    let Some(ns_value_class) = AnyClass::get("NSValue") else {
+        return false;
+    };
+    // AXValueRef range is encoded as two i64s in a single NSValue. We
+    // create the value with the bytes layout directly.
+    let bytes: [u8; 16] = unsafe {
+        let loc = (location as i64).to_ne_bytes();
+        let len = (length as i64).to_ne_bytes();
+        let mut b = [0u8; 16];
+        b[..8].copy_from_slice(&loc);
+        b[8..].copy_from_slice(&len);
+        b
+    };
+    let range_value: *mut AnyObject = unsafe {
+        let ptr = bytes.as_ptr() as *const c_void;
+        msg_send![ns_value_class, valueWithBytes: ptr objCType: b"{?=q}{?=q}\0".as_ptr() as *const i8]
+    };
+    if range_value.is_null() {
+        return false;
     }
-    Ok(())
+    let status = unsafe {
+        AXUIElementSetAttributeValue(focused, attr_name(attr), range_value as *mut AnyObject)
+    };
+    let _ = pool;
+    status == 0
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct AxRange {
+    location: i64,
+    length: i64,
+}
+
+/// Read an AX range (kAXSelectedTextRangeAttribute, kAXVisibleCharacterRangeAttribute,
+/// kAXInsertionPointLineNumberAttribute) from a returned NSValue.
+///
+/// The exact on-the-wire encoding is two i64s. We cheat by reading the
+/// first 16 bytes of the NSValue's internal storage. NSValue's encoding
+/// matches what `valueWithBytes:objCType:` produces, which we use when
+/// writing ranges back.
+fn ax_range_from_ns_value(raw: *mut AnyObject) -> AxRange {
+    unsafe {
+        // NSValue exposes valueWithBytes: and a private ivar layout.
+        // For values created with value:valueWithRange: the layout is
+        // two i64s back-to-back. We pull 16 bytes from the start of the
+        // object — this is the standard encoding for AXValueRef-backed
+        // ranges and matches the bytes we'd produce via valueWithBytes:.
+        let bytes = std::slice::from_raw_parts(raw as *const u8, 16);
+        let mut loc_bytes = [0u8; 8];
+        let mut len_bytes = [0u8; 8];
+        loc_bytes.copy_from_slice(&bytes[..8]);
+        len_bytes.copy_from_slice(&bytes[8..]);
+        AxRange {
+            location: i64::from_ne_bytes(loc_bytes),
+            length: i64::from_ne_bytes(len_bytes),
+        }
+    }
 }
 
 fn alloc_pool() -> *mut AnyObject {
