@@ -2,11 +2,11 @@
 //!
 //! Split into submodules so each concern has its own test surface:
 //!
-//!   * `ram`      — total-RAM detection and the tier classification.
+//!   * `ram` — total-RAM detection and the tier classification.
 //!   * `registry` — parses `assets/models.json` and exposes lookups.
 //!   * `downloader` — streams a GGUF from HuggingFace into our data dir,
-//!                    emits progress events the frontend can listen to.
-//!   * `store`    — knows where the downloaded model lives on disk.
+//!     emits progress events the frontend can listen to.
+//!   * `store` — knows where the downloaded model lives on disk.
 
 pub mod downloader;
 pub mod ram;

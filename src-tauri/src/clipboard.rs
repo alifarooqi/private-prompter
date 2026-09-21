@@ -21,9 +21,9 @@
 //! For our use case (replacing selection with a fresh rewritten string)
 //! that's exactly right.
 
+use objc2::msg_send;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{msg_send, ClassType};
-use std::ffi::{c_void, CStr};
+use std::ffi::c_void;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelectedTextError {
@@ -101,10 +101,7 @@ pub fn replace_selected_text(new_text: &str) -> Result<(), SelectedTextError> {
 
     // Strategy 1: settable AXSelectedText.
     let s1 = try_set_selected_text(focused, new_text, pool);
-    tracing::info!(
-        "ax: strategy 1 (AXSelectedText) → {:?}",
-        s1
-    );
+    tracing::info!("ax: strategy 1 (AXSelectedText) → {:?}", s1);
     if let Ok(true) = s1 {
         // Verify it actually took. Some browser elements return success
         // but ignore the write.
@@ -182,13 +179,8 @@ fn try_set_selected_text(
         msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
     };
 
-    let status = unsafe {
-        AXUIElementSetAttributeValue(
-            focused,
-            attr_name("AXSelectedText"),
-            new_ns as *mut AnyObject,
-        )
-    };
+    let status =
+        unsafe { AXUIElementSetAttributeValue(focused, attr_name("AXSelectedText"), new_ns) };
     Ok(status == 0)
 }
 
@@ -202,12 +194,7 @@ fn read_attr_range(focused: *mut AnyObject, attr: &str) -> Result<AxRange, Selec
     Ok(ax_range_from_ns_value(raw))
 }
 
-fn set_attr_string(
-    focused: *mut AnyObject,
-    attr: &str,
-    value: &str,
-    pool: *mut AnyObject,
-) -> bool {
+fn set_attr_string(focused: *mut AnyObject, attr: &str, value: &str, pool: *mut AnyObject) -> bool {
     let Some(ns_string_class) = AnyClass::get("NSString") else {
         return false;
     };
@@ -215,9 +202,7 @@ fn set_attr_string(
         let c_string = std::ffi::CString::new(value).unwrap_or_default();
         msg_send![ns_string_class, stringWithUTF8String: c_string.as_ptr()]
     };
-    let status = unsafe {
-        AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns as *mut AnyObject)
-    };
+    let status = unsafe { AXUIElementSetAttributeValue(focused, attr_name(attr), new_ns) };
     let _ = pool;
     status == 0
 }
@@ -234,7 +219,7 @@ fn set_attr_range(
     };
     // AXValueRef range is encoded as two i64s in a single NSValue. We
     // create the value with the bytes layout directly.
-    let bytes: [u8; 16] = unsafe {
+    let bytes: [u8; 16] = {
         let loc = (location as i64).to_ne_bytes();
         let len = (length as i64).to_ne_bytes();
         let mut b = [0u8; 16];
@@ -244,14 +229,12 @@ fn set_attr_range(
     };
     let range_value: *mut AnyObject = unsafe {
         let ptr = bytes.as_ptr() as *const c_void;
-        msg_send![ns_value_class, valueWithBytes: ptr objCType: b"{?=q}{?=q}\0".as_ptr() as *const i8]
+        msg_send![ns_value_class, valueWithBytes: ptr objCType: c"{?=q}{?=q}".as_ptr()]
     };
     if range_value.is_null() {
         return false;
     }
-    let status = unsafe {
-        AXUIElementSetAttributeValue(focused, attr_name(attr), range_value as *mut AnyObject)
-    };
+    let status = unsafe { AXUIElementSetAttributeValue(focused, attr_name(attr), range_value) };
     let _ = pool;
     status == 0
 }

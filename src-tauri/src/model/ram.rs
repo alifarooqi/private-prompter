@@ -70,10 +70,22 @@ mod tests {
     #[test]
     fn tier_boundaries() {
         assert_eq!(RamTier::from_bytes(0), RamTier::LessThan8Gb);
-        assert_eq!(RamTier::from_bytes(8 * 1024 * 1024 * 1024), RamTier::Between8And16Gb);
-        assert_eq!(RamTier::from_bytes(16 * 1024 * 1024 * 1024), RamTier::Between16And32Gb);
-        assert_eq!(RamTier::from_bytes(32 * 1024 * 1024 * 1024), RamTier::AtLeast32Gb);
-        assert_eq!(RamTier::from_bytes(64 * 1024 * 1024 * 1024), RamTier::AtLeast32Gb);
+        assert_eq!(
+            RamTier::from_bytes(8 * 1024 * 1024 * 1024),
+            RamTier::Between8And16Gb
+        );
+        assert_eq!(
+            RamTier::from_bytes(16 * 1024 * 1024 * 1024),
+            RamTier::Between16And32Gb
+        );
+        assert_eq!(
+            RamTier::from_bytes(32 * 1024 * 1024 * 1024),
+            RamTier::AtLeast32Gb
+        );
+        assert_eq!(
+            RamTier::from_bytes(64 * 1024 * 1024 * 1024),
+            RamTier::AtLeast32Gb
+        );
     }
 
     #[test]

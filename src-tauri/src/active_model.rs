@@ -32,11 +32,7 @@ pub fn load() -> ActiveModel {
     match std::fs::read(&path) {
         Ok(bytes) => match serde_json::from_slice::<ActiveModel>(&bytes) {
             Ok(cfg) => {
-                tracing::info!(
-                    "active_model: loaded {} (id={:?})",
-                    path.display(),
-                    cfg.0
-                );
+                tracing::info!("active_model: loaded {} (id={:?})", path.display(), cfg.0);
                 cfg
             }
             Err(err) => {
@@ -49,7 +45,10 @@ pub fn load() -> ActiveModel {
             }
         },
         Err(_) => {
-            tracing::info!("active_model: no config at {}; using default", path.display());
+            tracing::info!(
+                "active_model: no config at {}; using default",
+                path.display()
+            );
             ActiveModel(None)
         }
     }

@@ -2,6 +2,13 @@
 // We keep it because Tauri's standard scaffold uses it and Tauri v2 cross-platform
 // builds include Windows as a future target.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Many modules scaffold types and helpers ahead of the consumer wiring
+// (e.g. the alternative `Failed` download state, the `complete_blocking`
+// non-streaming variant, the `TemplateSummary` editor-preview helper).
+// Treating those as errors would force us to either wire them in early
+// or rip them out — both worse than letting the MVP flag them as
+// intentionally scaffolded. Phase 9 will either consume them or delete.
+#![allow(dead_code)]
 
 mod active_model;
 mod clipboard;
@@ -16,9 +23,7 @@ mod tray;
 mod undo;
 
 use commands::model::SharedModelState;
-use commands::permissions::{
-    check_accessibility_permission, open_accessibility_settings,
-};
+use commands::permissions::{check_accessibility_permission, open_accessibility_settings};
 use hotkey::{ActiveRewrite, SharedActiveRewrite};
 use inference::SharedInferenceState;
 use tauri::Manager;
@@ -82,7 +87,9 @@ pub fn run() {
                 }
                 Err(err) => {
                     eprintln!("app_data_dir unavailable, using temp fallback: {err}");
-                    model::store::set_data_dir(std::env::temp_dir().join("com.alifarooqi.privateprompter"));
+                    model::store::set_data_dir(
+                        std::env::temp_dir().join("com.alifarooqi.privateprompter"),
+                    );
                 }
             }
 
@@ -113,7 +120,9 @@ pub fn run() {
             }
 
             // Register the global hotkey.
-            if let Err(err) = hotkey::register(app.handle(), undo_state.clone(), active_rewrite.clone()) {
+            if let Err(err) =
+                hotkey::register(app.handle(), undo_state.clone(), active_rewrite.clone())
+            {
                 tracing::warn!("failed to register global hotkey: {err}");
             }
 

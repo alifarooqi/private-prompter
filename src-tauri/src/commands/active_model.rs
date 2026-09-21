@@ -7,7 +7,7 @@
 
 use tauri::State;
 
-use crate::active_model::{self, ActiveModel};
+use crate::active_model::{self};
 use crate::commands::model::SharedModelState;
 
 #[tauri::command]
@@ -37,7 +37,9 @@ pub fn set_active_model(
         // is on disk — we rely on filesystem truth here).
         if !state.downloaded.blocking_lock().contains_key(id) {
             // Double-check the disk before declaring it a failure.
-            let entry = crate::model::registry::get().find(id).map_err(|e| e.to_string())?;
+            let entry = crate::model::registry::get()
+                .find(id)
+                .map_err(|e| e.to_string())?;
             let path = crate::model::store::model_path(&entry.id, &entry.file);
             if !path.exists() {
                 return Err(format!("{id} isn't downloaded yet"));

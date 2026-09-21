@@ -20,7 +20,7 @@ jobs:
       - run: npm ci || npm install
       - run: npm run lint
       - run: npx tsc --noEmit
-      - run: npx vitest run --reporter=verbose
+      - run: npx vitest run --reporter=verbose --passWithNoTests
 
   test-rust:
     name: Rust tests

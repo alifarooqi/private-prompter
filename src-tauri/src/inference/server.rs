@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::process::{Child, Command};
 
 use super::{InferenceError, ServerStatus};
@@ -49,11 +49,16 @@ impl RunningServer {
         let binary = locate_sidecar_binary()?;
 
         let mut cmd = Command::new(binary);
-        cmd.arg("--model").arg(gguf)
-            .arg("--host").arg(host)
-            .arg("--port").arg(port.to_string())
-            .arg("--n-gpu-layers").arg("0") // Phase 3: CPU only; MLX path in v2.
-            .arg("--ctx-size").arg("4096")
+        cmd.arg("--model")
+            .arg(gguf)
+            .arg("--host")
+            .arg(host)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--n-gpu-layers")
+            .arg("0") // Phase 3: CPU only; MLX path in v2.
+            .arg("--ctx-size")
+            .arg("4096")
             .arg("--log-disable")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -87,7 +92,10 @@ impl RunningServer {
     }
 
     pub fn is_running(&self) -> bool {
-        self.child.as_ref().map(|c| c.id().is_some()).unwrap_or(false)
+        self.child
+            .as_ref()
+            .map(|c| c.id().is_some())
+            .unwrap_or(false)
     }
 
     pub async fn stop(mut self) -> Result<(), InferenceError> {
@@ -147,7 +155,9 @@ fn locate_sidecar_binary() -> Result<std::path::PathBuf, InferenceError> {
     // Dev fallback — the binary may live in src-tauri/binaries alongside the
     // Cargo target dir if we're running `cargo tauri dev`.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dev_candidate = manifest_dir.join("binaries").join(format!("{SIDECAR_NAME}-{triple}"));
+    let dev_candidate = manifest_dir
+        .join("binaries")
+        .join(format!("{SIDECAR_NAME}-{triple}"));
     if dev_candidate.exists() {
         return Ok(dev_candidate);
     }

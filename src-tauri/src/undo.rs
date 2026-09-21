@@ -10,10 +10,10 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::model::store as store_paths;
@@ -101,7 +101,9 @@ pub async fn load(app: &AppHandle) -> Vec<UndoEntry> {
 
 pub async fn save(app: &AppHandle, entries: &[UndoEntry]) {
     let path = undo_path(app);
-    let Ok(bytes) = serde_json::to_vec_pretty(entries) else { return };
+    let Ok(bytes) = serde_json::to_vec_pretty(entries) else {
+        return;
+    };
     let tmp = path.with_extension("json.tmp");
     if tokio::fs::write(&tmp, &bytes).await.is_ok() {
         let _ = tokio::fs::rename(&tmp, &path).await;
