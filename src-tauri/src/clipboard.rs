@@ -229,7 +229,7 @@ fn set_attr_range(
     };
     let range_value: *mut AnyObject = unsafe {
         let ptr = bytes.as_ptr() as *const c_void;
-        msg_send![ns_value_class, valueWithBytes: ptr objCType: c"{?=q}{?=q}".as_ptr() as *const i8]
+        msg_send![ns_value_class, valueWithBytes: ptr objCType: c"{?=q}{?=q}".as_ptr()]
     };
     if range_value.is_null() {
         return false;
