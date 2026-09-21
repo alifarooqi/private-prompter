@@ -221,7 +221,7 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     };
 
     let rewritten = if url_string.is_empty() {
-        rewrite_placeholder(&rendered).await
+        rewrite_placeholder(&rendered, &raw).await
     } else {
         let url = url_string;
         let mut accumulated = String::new();
@@ -279,8 +279,13 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn rewrite_placeholder(rendered: &str) -> String {
-    format!("[rewritten] {rendered}")
+/// Stand-in rewrite used when no model is downloaded yet. The full meta-
+/// prompt template is designed to *guide* a model — dumping it into the
+/// user's selection is noise, not a rewrite. So we pass the user's
+/// original text through unchanged with a marker so the user can verify
+/// the hotkey pipeline ran, but doesn't see the template internals.
+async fn rewrite_placeholder(_rendered: &str, raw: &str) -> String {
+    format!("[no model loaded — pass-through] {raw}")
 }
 
 #[cfg(test)]
