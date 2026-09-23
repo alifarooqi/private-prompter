@@ -47,8 +47,8 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
-        .manage(model_state)
-        .manage(inference_state)
+        .manage(model_state.clone())
+        .manage(inference_state.clone())
         .manage(undo_state.clone())
         .manage(active_rewrite.clone())
         .invoke_handler(tauri::generate_handler![
@@ -102,6 +102,38 @@ pub fn run() {
             {
                 let state: tauri::State<SharedModelState> = app.state();
                 commands::model::scan_downloaded(&state);
+            }
+
+            // Auto-start the inference server if a model is already downloaded.
+            // Spawned so it doesn't block setup; failures are logged but
+            // don't crash the app — the user can still click Start server
+            // manually from Settings → Model.
+            {
+                let app_handle = app.handle().clone();
+                let inference_state_clone = inference_state.clone();
+                let model_state_clone = model_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    match inference::commands::start_inference_impl(
+                        &app_handle,
+                        &inference_state_clone,
+                        &model_state_clone,
+                    )
+                    .await
+                    {
+                        Ok(status) => tracing::info!(
+                            "auto-start: inference server up at {}:{} (model {})",
+                            status.host.unwrap_or_default(),
+                            status.port.unwrap_or_default(),
+                            status.current_model_id.unwrap_or_default(),
+                        ),
+                        Err(err) if err.contains("No model downloaded") => {
+                            tracing::info!(
+                                "auto-start: no downloaded model yet, server stays stopped"
+                            );
+                        }
+                        Err(err) => tracing::warn!("auto-start: inference failed: {err}"),
+                    }
+                });
             }
 
             tray::install(app.handle())?;

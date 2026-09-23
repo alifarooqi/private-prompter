@@ -95,7 +95,18 @@ pub mod commands {
         state: State<'_, SharedInferenceState>,
         model_state: State<'_, SharedModelState>,
     ) -> Result<ServerStatus, String> {
-        let model_id_opt = pick_model_id(&model_state).await;
+        start_inference_impl(&app, &state, &model_state).await
+    }
+
+    /// Inner start routine. Used by the Tauri command and by the app's
+    /// setup hook (which auto-starts the server when a model is already
+    /// downloaded, so the user doesn't have to click Start server manually).
+    pub async fn start_inference_impl(
+        app: &AppHandle,
+        state: &SharedInferenceState,
+        model_state: &SharedModelState,
+    ) -> Result<ServerStatus, String> {
+        let model_id_opt = pick_model_id(model_state).await;
 
         let Some(model_id) = model_id_opt else {
             return Err("No model downloaded yet".to_string());
@@ -111,7 +122,7 @@ pub mod commands {
             }
         }
 
-        let server = server::RunningServer::start(&app, &gguf, &entry.id)
+        let server = server::RunningServer::start(app, &gguf, &entry.id)
             .await
             .map_err(|e| e.to_string())?;
         let status = server.status();
