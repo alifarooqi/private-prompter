@@ -348,11 +348,15 @@ fn set_attr_range(
     let Some(ns_value_class) = AnyClass::get("NSValue") else {
         return false;
     };
-    // AXValueRef range is encoded as two i64s in a single NSValue. We
-    // create the value with the bytes layout directly.
+    // AXValueRef range is encoded as two i64s in a single NSValue. The
+    // objCType encoding matches `_NSRange` (the same struct NSTextView
+    // produces when you ask it for its selection): a struct of two
+    // unsigned long longs. Using `Q` (unsigned long long) rather than
+    // `q` (signed long long) avoids sign-extension surprises when the
+    // range location is large.
     let bytes: [u8; 16] = {
-        let loc = (location as i64).to_ne_bytes();
-        let len = (length as i64).to_ne_bytes();
+        let loc = (location as u64).to_ne_bytes();
+        let len = (length as u64).to_ne_bytes();
         let mut b = [0u8; 16];
         b[..8].copy_from_slice(&loc);
         b[8..].copy_from_slice(&len);
@@ -360,7 +364,7 @@ fn set_attr_range(
     };
     let range_value: *mut AnyObject = unsafe {
         let ptr = bytes.as_ptr() as *const c_void;
-        msg_send![ns_value_class, valueWithBytes: ptr objCType: c"{?=q}{?=q}".as_ptr()]
+        msg_send![ns_value_class, valueWithBytes: ptr objCType: c"{_NSRange=QQ}".as_ptr()]
     };
     if range_value.is_null() {
         return false;
@@ -380,25 +384,20 @@ struct AxRange {
 /// Read an AX range (kAXSelectedTextRangeAttribute, kAXVisibleCharacterRangeAttribute,
 /// kAXInsertionPointLineNumberAttribute) from a returned NSValue.
 ///
-/// The exact on-the-wire encoding is two i64s. We cheat by reading the
-/// first 16 bytes of the NSValue's internal storage. NSValue's encoding
-/// matches what `valueWithBytes:objCType:` produces, which we use when
-/// writing ranges back.
+/// The on-the-wire encoding matches `_NSRange`: two unsigned long longs
+/// (16 bytes). We read the first 16 bytes of the NSValue's internal
+/// storage; the encoding must match what we produce in `set_attr_range`
+/// (signed/unsigned mismatches corrupt the readback).
 fn ax_range_from_ns_value(raw: *mut AnyObject) -> AxRange {
     unsafe {
-        // NSValue exposes valueWithBytes: and a private ivar layout.
-        // For values created with value:valueWithRange: the layout is
-        // two i64s back-to-back. We pull 16 bytes from the start of the
-        // object — this is the standard encoding for AXValueRef-backed
-        // ranges and matches the bytes we'd produce via valueWithBytes:.
         let bytes = std::slice::from_raw_parts(raw as *const u8, 16);
         let mut loc_bytes = [0u8; 8];
         let mut len_bytes = [0u8; 8];
         loc_bytes.copy_from_slice(&bytes[..8]);
         len_bytes.copy_from_slice(&bytes[8..]);
         AxRange {
-            location: i64::from_ne_bytes(loc_bytes),
-            length: i64::from_ne_bytes(len_bytes),
+            location: u64::from_ne_bytes(loc_bytes) as i64,
+            length: u64::from_ne_bytes(len_bytes) as i64,
         }
     }
 }

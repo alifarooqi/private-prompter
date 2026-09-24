@@ -32,19 +32,41 @@ pub struct CompletionRequest {
     pub n_predict: u32,
     pub temperature: f32,
     pub top_p: f32,
+    /// Top-K sampling. 0 disables it; llama-server default is 40. We set
+    /// it explicitly so a degenerate repetition loop (where the same
+    /// high-prob token keeps winning the top-p cut) gets clipped by the
+    /// top-k cut.
+    #[serde(default)]
+    pub top_k: u32,
+    /// Repetition penalty. llama-server default is 1.0 (no penalty).
+    /// 1.1 nudges the model away from repeating recent tokens, which is
+    /// the single biggest fix for the looped-output problem we saw on
+    /// CPU inference with the 1.5B Qwen model.
+    #[serde(default = "default_repeat_penalty")]
+    pub repeat_penalty: f32,
     pub stop: Vec<String>,
     pub stream: bool,
     /// Reuse llama.cpp's KV cache across calls when the prefix matches.
     /// Pairs with `slot_id` so the cache lives in a stable slot.
     #[serde(default = "default_cache_prompt")]
     pub cache_prompt: bool,
-    /// Pin to a single slot so KV cache hits are deterministic.
-    #[serde(default)]
+    /// Pin to a single slot so KV cache hits are deterministic. Set
+    /// to -1 to let llama-server allocate (safer when state can leak
+    /// across requests).
+    #[serde(default = "default_slot_id")]
     pub slot_id: i32,
 }
 
 fn default_cache_prompt() -> bool {
     true
+}
+
+fn default_repeat_penalty() -> f32 {
+    1.1
+}
+
+fn default_slot_id() -> i32 {
+    -1
 }
 
 impl CompletionRequest {
@@ -57,6 +79,8 @@ impl CompletionRequest {
             n_predict: 256,
             temperature: 0.7,
             top_p: 0.95,
+            top_k: 40,
+            repeat_penalty: 1.1,
             // </s> is Qwen's true EOS; <|im_end|> is what it actually
             // emits at the end of an assistant turn in ChatML framing;
             // <|endoftext|> is the raw base-model stop. Cover all three
@@ -68,7 +92,11 @@ impl CompletionRequest {
             ],
             stream: true,
             cache_prompt: true,
-            slot_id: 0,
+            // Don't pin a slot — slot 0 in particular risks retaining
+            // stale generation state between requests, which combined
+            // with cache_prompt can cause the model to loop on previous
+            // output. Let llama-server pick.
+            slot_id: -1,
         }
     }
 }
