@@ -40,16 +40,22 @@ pub enum SelectedTextError {
 }
 
 /// Captured at the start of a streaming replace. Holds onto the focused
-/// AX element and the original selection range so subsequent per-chunk
-/// writes always target the user's original selection, even if the
-/// caret moves mid-stream.
+/// AX element + the start of the original selection, and tracks how many
+/// characters have been written so far so subsequent per-chunk writes
+/// append after the previous chunk.
 ///
-/// `kAXSelectedTextAttribute` writes replace the contents of the
-/// currently-selected range. If the caret has moved, the next write
-/// would land in a new place. We therefore capture the focused element
-/// once and re-apply the original selection range before each write
-/// using `kAXSelectedTextRangeAttribute` (Strategy 2's caret-restore
-/// trick, reused for streaming).
+/// `kAXSelectedTextAttribute` writes REPLACE the contents of the
+/// currently-selected range. To get streaming-append behavior we:
+///   1. Capture the start of the original selection (`start = range.location`)
+///      and the original length (so the first write replaces the original).
+///   2. After each write, advance a `written_len` counter.
+///   3. For subsequent writes, select `(start + written_len, 0)` — a
+///      zero-length selection at the caret — and write there, which
+///      inserts the new chunk at that position.
+///
+/// If the user clicks elsewhere mid-stream, the next `reselect` may
+/// fail but the write will still attempt at whatever the current
+/// selection is — a minor misplacement, never a panic.
 ///
 /// The anchor owns its `NSAutoreleasePool` so `CFString` instances
 /// allocated inside the chunk loop stay alive for the duration of
@@ -57,34 +63,57 @@ pub enum SelectedTextError {
 pub struct ReplaceAnchor {
     system: *mut AnyObject,
     focused: *mut AnyObject,
-    range: AxRange,
+    /// Where the original selection started. First write lands here.
+    start: i64,
+    /// Length of the original selection — used for the first write so
+    /// it cleanly replaces the original text instead of inserting.
+    original_len: i64,
+    /// Total chars we have written so far across all chunks (after the
+    /// first write, this is the position the next chunk should append at).
+    written_len: i64,
     pool: *mut AnyObject,
 }
 
 impl ReplaceAnchor {
-    /// Re-select the original range so the next `AXSelectedText` write
-    /// lands inside the user's original selection.
-    fn reselect(&self) -> bool {
+    /// Position the caret at `target` (location, length) for the next
+    /// `AXSelectedText` write.
+    fn select(&self, location: i64, length: i64) -> bool {
         set_attr_range(
             self.focused,
             "AXSelectedTextRange",
-            self.range.location as usize,
-            self.range.length as usize,
+            location as usize,
+            length as usize,
             self.pool,
         )
     }
 
-    /// Write `text` into the anchored selection. Re-selects the range
-    /// first so even if the caret drifted, we land in the right place.
-    fn write(&self, text: &str) -> bool {
-        // Re-select the range before each write. A reselect failure is
-        // not fatal — the next write will still *try* to land in the
-        // current selection, which is at worst a minor misplacement
-        // if the user clicked elsewhere.
-        if !self.reselect() {
-            tracing::warn!("ax: streaming anchor reselect failed");
+    /// Write the first chunk: select the original range, write, then
+    /// advance `written_len` so subsequent calls append rather than
+    /// re-overwrite the first chunk.
+    fn write_first(&mut self, text: &str) -> bool {
+        if !self.select(self.start, self.original_len) {
+            tracing::warn!("ax: streaming anchor first-write reselect failed");
         }
-        try_set_selected_text(self.focused, text, self.pool).unwrap_or(false)
+        let ok = try_set_selected_text(self.focused, text, self.pool).unwrap_or(false);
+        if ok {
+            self.written_len = text.chars().count() as i64;
+        }
+        ok
+    }
+
+    /// Append a chunk after everything previously written. Sets a
+    /// zero-length selection at the caret position `start + written_len`
+    /// and writes there, which inserts the new content.
+    fn write_append(&mut self, text: &str) -> bool {
+        let target = self.start + self.written_len;
+        if !self.select(target, 0) {
+            tracing::warn!("ax: streaming anchor append reselect failed");
+        }
+        let ok = try_set_selected_text(self.focused, text, self.pool).unwrap_or(false);
+        if ok {
+            self.written_len += text.chars().count() as i64;
+        }
+        ok
     }
 }
 
@@ -154,21 +183,29 @@ pub fn capture_replace_anchor() -> Result<ReplaceAnchor, SelectedTextError> {
     Ok(ReplaceAnchor {
         system,
         focused,
-        range,
+        start: range.location,
+        original_len: range.length,
+        written_len: 0,
         pool,
     })
 }
 
 /// Write `text` into the anchored selection. Designed to be called many
-/// times in a streaming loop; each call re-selects the original range
-/// before writing so partial output lands in the right place even if
-/// the user clicks elsewhere mid-stream.
+/// times in a streaming loop:
+///   * The first call (`first = true`) replaces the original selection
+///     with `text`.
+///   * Subsequent calls (`first = false`) append after everything
+///     previously written by this anchor.
 ///
 /// Returns `true` on success, `false` if the write failed. Callers
 /// should not panic on `false` — partial replacement is acceptable
 /// during streaming; the final write at end-of-stream is what matters.
-pub fn replace_anchored(anchor: &ReplaceAnchor, text: &str) -> bool {
-    anchor.write(text)
+pub fn replace_anchored(anchor: &mut ReplaceAnchor, text: &str, first: bool) -> bool {
+    if first {
+        anchor.write_first(text)
+    } else {
+        anchor.write_append(text)
+    }
 }
 
 /// Replace the currently selected text with `new_text`. The focused element

@@ -280,7 +280,7 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         let app_for_stream = app.clone();
 
         let writer = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let anchor = clipboard::capture_replace_anchor()
+            let mut anchor = clipboard::capture_replace_anchor()
                 .map_err(|e| format!("capture anchor failed: {e}"))?;
             let mut accumulated = String::new();
             let mut last_replace = std::time::Instant::now();
@@ -288,14 +288,29 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
             let mut first_replace_done = false;
             while let Some(content) = rx.blocking_recv() {
                 accumulated.push_str(&content);
+                // Defensive: if a partial <|im_end|> slips through as
+                // streamed tokens (llama-server's stop matching only
+                // fires on JSON `stop:true`), truncate here so we never
+                // paste the chat-template tail.
+                if let Some(idx) = accumulated.find("<|im_end|>") {
+                    accumulated.truncate(idx);
+                }
+                if accumulated.len() > 4096 {
+                    // Hard safety cap: a runaway loop that ignores
+                    // n_predict shouldn't be able to paste megabytes
+                    // into the user's text field.
+                    tracing::warn!("ax: streaming accumulated > 4096 chars, truncating");
+                    accumulated.truncate(4096);
+                }
                 if !first_replace_done || last_replace.elapsed() >= min_replace_interval {
-                    let _ = clipboard::replace_anchored(&anchor, &accumulated);
+                    let is_first = !first_replace_done;
+                    let _ = clipboard::replace_anchored(&mut anchor, &accumulated, is_first);
                     first_replace_done = true;
                     last_replace = std::time::Instant::now();
                 }
             }
             // Final flush after stream end.
-            let _ = clipboard::replace_anchored(&anchor, &accumulated);
+            let _ = clipboard::replace_anchored(&mut anchor, &accumulated, !first_replace_done);
             Ok(())
         });
 
