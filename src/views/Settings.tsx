@@ -62,6 +62,7 @@ export function Settings({ onRevoked }: Props) {
   const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
     "idle",
   );
+  const [serverLoading, setServerLoading] = useState(false);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [progressById, setProgressById] = useState<
@@ -105,15 +106,20 @@ export function Settings({ onRevoked }: Props) {
 
   async function onStartServer() {
     setServerBusy("starting");
+    setServerLoading(true);
     try {
-      const status = await startInference();
-      // start_inference waits for status: "ok" before returning, so the
-      // server is genuinely ready here — don't force loading: true.
+      await startInference();
+      // start_inference spawns llama-server and returns immediately.
+      // Poll /health until status is "ok" so the UI flips from
+      // "Loading model…" to "Running on …" at the right moment.
+      await waitForServerReady();
+      const status = await inferenceStatus();
       setServer(status);
     } catch (err) {
       console.error("start inference failed", err);
     } finally {
       setServerBusy("idle");
+      setServerLoading(false);
     }
   }
 
@@ -127,6 +133,7 @@ export function Settings({ onRevoked }: Props) {
       console.error("stop inference failed", err);
     } finally {
       setServerBusy("idle");
+      setServerLoading(false);
     }
   }
 
@@ -137,12 +144,43 @@ export function Settings({ onRevoked }: Props) {
       // If the server is running, restart it on the new model.
       if (server?.running) {
         await stopInference();
-        const status = await startInference();
-        setServer(status);
+        setServerBusy("starting");
+        setServerLoading(true);
+        try {
+          await startInference();
+          await waitForServerReady();
+          const status = await inferenceStatus();
+          setServer(status);
+        } finally {
+          setServerBusy("idle");
+          setServerLoading(false);
+        }
       }
     } catch (err) {
       console.error("select active model failed", err);
     }
+  }
+
+  /**
+   * Poll `inferenceHealth` until llama-server reports status: "ok".
+   * Yields earlier if the server stops responding (returns null) so we
+   * don't hang the UI forever. Caller is responsible for clearing the
+   * "Loading…" indicator.
+   */
+  async function waitForServerReady(timeoutMs = 60_000): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const health = await inferenceHealth();
+        if (health === null) return; // server gone
+        if (health.status === "ok") return;
+      } catch {
+        // /health not reachable yet — keep polling.
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    // Timed out. Surface as a console warning so the dev knows.
+    console.warn("inference: server did not become healthy within 60s");
   }
 
   const downloadedModels = (models ?? []).filter((m) => m.downloaded);
@@ -177,6 +215,7 @@ export function Settings({ onRevoked }: Props) {
             downloadedModels={downloadedModels}
             server={server}
             serverBusy={serverBusy}
+            serverLoading={serverLoading}
             activeModelId={activeModelId}
             onStartServer={onStartServer}
             onStopServer={onStopServer}
@@ -241,6 +280,7 @@ function GeneralTab({
   downloadedModels,
   server,
   serverBusy,
+  serverLoading,
   activeModelId,
   onStartServer,
   onStopServer,
@@ -253,6 +293,7 @@ function GeneralTab({
   downloadedModels: ModelSummary[];
   server: ServerStatus | null;
   serverBusy: "idle" | "starting" | "stopping";
+  serverLoading: boolean;
   activeModelId: string | null;
   onStartServer: () => Promise<void>;
   onStopServer: () => Promise<void>;
@@ -264,6 +305,7 @@ function GeneralTab({
         downloadedModels={downloadedModels}
         server={server}
         serverBusy={serverBusy}
+        serverLoading={serverLoading}
         activeModelId={activeModelId}
         onStartServer={onStartServer}
         onStopServer={onStopServer}
@@ -304,6 +346,7 @@ function InferenceSection({
   downloadedModels,
   server,
   serverBusy,
+  serverLoading,
   activeModelId,
   onStartServer,
   onStopServer,
@@ -312,6 +355,7 @@ function InferenceSection({
   downloadedModels: ModelSummary[];
   server: ServerStatus | null;
   serverBusy: "idle" | "starting" | "stopping";
+  serverLoading: boolean;
   activeModelId: string | null;
   onStartServer: () => Promise<void>;
   onStopServer: () => Promise<void>;
@@ -320,12 +364,13 @@ function InferenceSection({
   const running = server?.running ?? false;
   const starting = serverBusy === "starting";
   const stopping = serverBusy === "stopping";
-  const busy = starting || stopping;
+  const loading = serverLoading;
+  const busy = starting || stopping || loading;
   const hasModel = downloadedModels.length > 0;
 
   const statusLine = (() => {
     if (running && server) {
-      return server.loading
+      return loading
         ? `Loading model on ${server.host}:${server.port}…`
         : `Running on ${server.host}:${server.port}`;
     }

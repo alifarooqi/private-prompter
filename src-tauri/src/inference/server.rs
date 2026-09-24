@@ -73,7 +73,12 @@ impl RunningServer {
             model_id: model_id.to_string(),
         };
 
-        server.wait_healthy().await?;
+        // Give llama-server a beat to bind to its port. If it dies
+        // immediately the subsequent /health poll will surface the error;
+        // we don't block here so the caller can stream a 'Loading
+        // model…' UI while the model actually loads into memory (which
+        // can take a few seconds for the larger GGUFs).
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         Ok(server)
     }
 
