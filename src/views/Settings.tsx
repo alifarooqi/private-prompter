@@ -370,12 +370,13 @@ function InferenceSection({
 
   const statusLine = (() => {
     if (running && server) {
-      // No trailing ellipsis on the loading variant — it would push
-      // the line over the wrap threshold on narrow widths and make the
-      // row jump between one and two lines as the state flips. The
-      // pulsing amber dot below carries the loading cue instead.
+      // Same character count for both states so the row doesn't wobble
+      // between one and two lines as the server flips loading → ready.
+      // The model identity is shown in the dropdown; the status line just
+      // names the server's host:port and the action ("Loading" /
+      // "Running"). The pulsing amber dot below carries the loading cue.
       return loading
-        ? `Loading model on ${server.host}:${server.port}`
+        ? `Loading on ${server.host}:${server.port}`
         : `Running on ${server.host}:${server.port}`;
     }
     return hasModel ? "Stopped" : "Download a model to start the inference server";
