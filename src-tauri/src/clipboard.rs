@@ -44,14 +44,15 @@ pub enum SelectedTextError {
 /// characters have been written so far so subsequent per-chunk writes
 /// append after the previous chunk.
 ///
-/// `kAXSelectedTextAttribute` writes REPLACE the contents of the
-/// currently-selected range. To get streaming-append behavior we:
-///   1. Capture the start of the original selection (`start = range.location`)
-///      and the original length (so the first write replaces the original).
-///   2. After each write, advance a `written_len` counter.
-///   3. For subsequent writes, select `(start + written_len, 0)` — a
-///      zero-length selection at the caret — and write there, which
-///      inserts the new chunk at that position.
+/// Strategy detection happens on the first write:
+///   1. Try `kAXSelectedTextAttribute` (Strategy 1 — works on native
+///      NSTextView and `<input>`/`<textarea>`). If the write succeeds
+///      AND a verification readback matches what we wrote, the anchor
+///      commits to Strategy 1 for the rest of the stream.
+///   2. Otherwise, fall back to Strategy 2 (`kAXValueAttribute` with
+///      manual range splice — works on browser `contenteditable` divs
+///      like Gemini's composer or Notion's editor which reject
+///      `AXSelectedText` writes).
 ///
 /// If the user clicks elsewhere mid-stream, the next `reselect` may
 /// fail but the write will still attempt at whatever the current
@@ -71,12 +72,33 @@ pub struct ReplaceAnchor {
     /// Total chars we have written so far across all chunks (after the
     /// first write, this is the position the next chunk should append at).
     written_len: i64,
+    /// Strategy chosen on the first write. `None` until we attempt the
+    /// first write and discover what works on this element.
+    strategy: Option<Strategy>,
+    /// For Strategy 2: the original `AXValue` text outside the
+    /// selection range (`value[..start]`). We cache this so we don't
+    /// have to re-read the entire document on every chunk.
+    before: Option<String>,
+    /// For Strategy 2: the original `AXValue` text after the selection
+    /// range (`value[end..]`). Same reason as `before`.
+    after: Option<String>,
+    /// End of the original selection. Strategy 2 splices
+    /// `before + accumulated + after` on each write.
+    end: i64,
     pool: *mut AnyObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Strategy {
+    /// kAXSelectedTextAttribute — works on NSTextView / input / textarea.
+    SelectedText,
+    /// kAXValueAttribute splice — works on contenteditable divs.
+    ValueSplice,
 }
 
 impl ReplaceAnchor {
     /// Position the caret at `target` (location, length) for the next
-    /// `AXSelectedText` write.
+    /// `AXSelectedText` write. Only meaningful in Strategy 1.
     fn select(&self, location: i64, length: i64) -> bool {
         set_attr_range(
             self.focused,
@@ -87,33 +109,155 @@ impl ReplaceAnchor {
         )
     }
 
-    /// Write the first chunk: select the original range, write, then
-    /// advance `written_len` so subsequent calls append rather than
-    /// re-overwrite the first chunk.
+    /// First-write path. Tries Strategy 1; on readback mismatch or
+    /// failure, falls through to Strategy 2. Either way the anchor is
+    /// locked into one strategy for the rest of the stream.
     fn write_first(&mut self, text: &str) -> bool {
+        // Try Strategy 1 first.
         if !self.select(self.start, self.original_len) {
             tracing::warn!("ax: streaming anchor first-write reselect failed");
         }
-        let ok = try_set_selected_text(self.focused, text, self.pool).unwrap_or(false);
-        if ok {
-            self.written_len = text.chars().count() as i64;
+        let s1_status = try_set_selected_text(self.focused, text, self.pool);
+        if let Ok(true) = s1_status {
+            // Verify readback. Some elements (notably contenteditable)
+            // return success but ignore the write.
+            let verify = read_attr_string(self.focused, "AXSelectedText");
+            if let Ok(current) = verify {
+                if current == text {
+                    tracing::info!("ax: streaming chose Strategy 1 (AXSelectedText, verified)");
+                    self.strategy = Some(Strategy::SelectedText);
+                    self.written_len = text.chars().count() as i64;
+                    return true;
+                }
+                tracing::warn!(
+                    "ax: Strategy 1 reported success but readback differs (got {} chars, expected {})",
+                    current.chars().count(),
+                    text.chars().count()
+                );
+            }
         }
-        ok
+        // Fall through to Strategy 2.
+        self.write_first_value_splice(text)
     }
 
-    /// Append a chunk after everything previously written. Sets a
-    /// zero-length selection at the caret position `start + written_len`
-    /// and writes there, which inserts the new content.
+    fn write_first_value_splice(&mut self, text: &str) -> bool {
+        let value = match read_attr_string(self.focused, "AXValue") {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::error!("ax: Strategy 2 readback of AXValue failed: {err}");
+                return false;
+            }
+        };
+        // Use our captured start/original_len rather than the live
+        // range read — the user may have clicked elsewhere between
+        // capture and first write, and we want to land where we said
+        // we would.
+        let start = (self.start as usize).min(value.len());
+        let end = ((self.start + self.original_len) as usize).min(value.len());
+        let before = value[..start].to_string();
+        let after = value[end..].to_string();
+
+        let mut new_value = String::with_capacity(before.len() + text.len() + after.len());
+        new_value.push_str(&before);
+        new_value.push_str(text);
+        new_value.push_str(&after);
+
+        if !set_attr_string(self.focused, "AXValue", &new_value, self.pool) {
+            tracing::error!("ax: Strategy 2 setAttr(AXValue) returned non-zero");
+            return false;
+        }
+        let caret = (start + text.chars().count()) as i64;
+        let _ = set_attr_range(
+            self.focused,
+            "AXSelectedTextRange",
+            caret as usize,
+            0,
+            self.pool,
+        );
+
+        self.strategy = Some(Strategy::ValueSplice);
+        self.before = Some(before);
+        self.after = Some(after);
+        self.end = end as i64;
+        self.written_len = text.chars().count() as i64;
+        tracing::info!("ax: streaming chose Strategy 2 (AXValue splice)");
+        true
+    }
+
+    /// Append a chunk after everything previously written. Routes to
+    /// whichever strategy the first write committed us to.
     fn write_append(&mut self, text: &str) -> bool {
+        match self.strategy {
+            Some(Strategy::SelectedText) => self.write_append_selected_text(text),
+            Some(Strategy::ValueSplice) => self.write_append_value_splice(text),
+            None => {
+                // Shouldn't happen — first write should have set the
+                // strategy. Treat as a fresh first write.
+                self.write_first(text)
+            }
+        }
+    }
+
+    fn write_append_selected_text(&mut self, text: &str) -> bool {
+        // Strategy 1 contract: `text` is the FULL cumulative buffer.
+        // We trim to the slice we haven't committed yet and insert
+        // that — Strategy 1 inserts at the caret position, so writing
+        // the full buffer would duplicate the prefix.
+        let total_chars = text.chars().count() as i64;
+        if total_chars <= self.written_len {
+            // Caller passed nothing new since the last write.
+            return true;
+        }
+        let skip_bytes = text
+            .char_indices()
+            .nth(self.written_len as usize)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        let slice = &text[skip_bytes..];
         let target = self.start + self.written_len;
         if !self.select(target, 0) {
             tracing::warn!("ax: streaming anchor append reselect failed");
         }
-        let ok = try_set_selected_text(self.focused, text, self.pool).unwrap_or(false);
+        let ok = try_set_selected_text(self.focused, slice, self.pool).unwrap_or(false);
         if ok {
-            self.written_len += text.chars().count() as i64;
+            self.written_len = total_chars;
         }
         ok
+    }
+
+    fn write_append_value_splice(&mut self, text: &str) -> bool {
+        // Strategy 2 contract: `text` is the FULL cumulative accumulated
+        // buffer (not a delta). We rebuild the document as
+        //   before + text + after
+        // and write the whole thing back. This is correct for
+        // contenteditable but slightly wasteful — every chunk costs one
+        // AXValue read (implicit, via set) + one write. The 120 ms
+        // throttle keeps the cost manageable.
+        let Some(before) = self.before.as_ref() else {
+            return false;
+        };
+        let Some(after) = self.after.as_ref() else {
+            return false;
+        };
+        let mut new_value = String::with_capacity(before.len() + text.len() + after.len());
+        new_value.push_str(before);
+        new_value.push_str(text);
+        new_value.push_str(after);
+
+        if !set_attr_string(self.focused, "AXValue", &new_value, self.pool) {
+            tracing::warn!("ax: Strategy 2 append: setAttr(AXValue) returned non-zero");
+            return false;
+        }
+        let caret = ((self.start as usize) + text.chars().count()) as i64;
+        let _ = set_attr_range(
+            self.focused,
+            "AXSelectedTextRange",
+            caret as usize,
+            0,
+            self.pool,
+        );
+        self.written_len = text.chars().count() as i64;
+        true
     }
 }
 
@@ -186,25 +330,36 @@ pub fn capture_replace_anchor() -> Result<ReplaceAnchor, SelectedTextError> {
         start: range.location,
         original_len: range.length,
         written_len: 0,
+        strategy: None,
+        before: None,
+        after: None,
+        end: 0,
         pool,
     })
 }
 
-/// Write `text` into the anchored selection. Designed to be called many
-/// times in a streaming loop:
-///   * The first call (`first = true`) replaces the original selection
-///     with `text`.
-///   * Subsequent calls (`first = false`) append after everything
-///     previously written by this anchor.
+/// Write the cumulative `accumulated` text into the anchored selection.
 ///
-/// Returns `true` on success, `false` if the write failed. Callers
-/// should not panic on `false` — partial replacement is acceptable
-/// during streaming; the final write at end-of-stream is what matters.
-pub fn replace_anchored(anchor: &mut ReplaceAnchor, text: &str, first: bool) -> bool {
+/// `accumulated` must be the **full** buffer of all chunks received so
+/// far — the anchor internally tracks how much has been committed via
+/// `written_len` and only writes the new portion. This single contract
+/// works for both strategies:
+///   * Strategy 1 (AXSelectedText): trims `accumulated` to
+///     `accumulated[written_len..]` and inserts at the caret position.
+///   * Strategy 2 (AXValue splice): uses the full `accumulated` to
+///     rebuild the document as `before + accumulated + after`.
+///
+/// `first = true` forces the first-write path (which performs strategy
+/// detection). Subsequent calls pass `first = false`.
+///
+/// Returns `true` on success, `false` on failure. Callers should not
+/// panic on `false` — partial replacement is acceptable during
+/// streaming; the final write at end-of-stream is what matters.
+pub fn replace_anchored(anchor: &mut ReplaceAnchor, accumulated: &str, first: bool) -> bool {
     if first {
-        anchor.write_first(text)
+        anchor.write_first(accumulated)
     } else {
-        anchor.write_append(text)
+        anchor.write_append(accumulated)
     }
 }
 
