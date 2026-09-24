@@ -128,7 +128,16 @@ impl RunningServer {
             }
             if let Ok(resp) = client.get(&url).send().await {
                 if resp.status().is_success() {
-                    return Ok(());
+                    // /health returns 200 OK during loading too; we only
+                    // treat status: "ok" as ready so the caller doesn't
+                    // return before the model is loaded into memory.
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if json.get("status").and_then(|v| v.as_str())
+                            == Some("ok")
+                        {
+                            return Ok(());
+                        }
+                    }
                 }
             }
             tokio::time::sleep(HEALTH_POLL).await;

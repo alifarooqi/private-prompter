@@ -107,7 +107,9 @@ export function Settings({ onRevoked }: Props) {
     setServerBusy("starting");
     try {
       const status = await startInference();
-      setServer({ ...status, loading: true });
+      // start_inference waits for status: "ok" before returning, so the
+      // server is genuinely ready here — don't force loading: true.
+      setServer(status);
     } catch (err) {
       console.error("start inference failed", err);
     } finally {
@@ -120,7 +122,7 @@ export function Settings({ onRevoked }: Props) {
     try {
       await stopInference();
       const status = await inferenceStatus();
-      setServer({ ...status, loading: false });
+      setServer(status);
     } catch (err) {
       console.error("stop inference failed", err);
     } finally {
@@ -136,7 +138,7 @@ export function Settings({ onRevoked }: Props) {
       if (server?.running) {
         await stopInference();
         const status = await startInference();
-        setServer({ ...status, loading: true });
+        setServer(status);
       }
     } catch (err) {
       console.error("select active model failed", err);
