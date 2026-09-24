@@ -370,8 +370,12 @@ function InferenceSection({
 
   const statusLine = (() => {
     if (running && server) {
+      // No trailing ellipsis on the loading variant — it would push
+      // the line over the wrap threshold on narrow widths and make the
+      // row jump between one and two lines as the state flips. The
+      // pulsing amber dot below carries the loading cue instead.
       return loading
-        ? `Loading model on ${server.host}:${server.port}…`
+        ? `Loading model on ${server.host}:${server.port}`
         : `Running on ${server.host}:${server.port}`;
     }
     return hasModel ? "Stopped" : "Download a model to start the inference server";
@@ -390,7 +394,7 @@ function InferenceSection({
               className={`inline-block h-2.5 w-2.5 rounded-full ${
                 running
                   ? server?.loading
-                    ? "bg-amber-400"
+                    ? "animate-pulse bg-amber-400"
                     : "bg-emerald-500"
                   : "bg-neutral-300 dark:bg-neutral-700"
               }`}
