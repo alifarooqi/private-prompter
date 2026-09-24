@@ -5,7 +5,7 @@
 //! call into `complete_streaming`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,16 @@ use tauri::Emitter;
 use super::InferenceError;
 
 const STREAM_EVENT: &str = "inference://stream";
+
+/// Shared reqwest client. Building one per call (the old behaviour) means
+/// every hotkey press rebuilds the TLS stack and connection pool; the
+/// reqwest 0.12 default builder does keep-alive but we still save the
+/// per-call config evaluation, and it gives us a single place to tweak
+/// defaults later.
+pub(crate) fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -24,17 +34,41 @@ pub struct CompletionRequest {
     pub top_p: f32,
     pub stop: Vec<String>,
     pub stream: bool,
+    /// Reuse llama.cpp's KV cache across calls when the prefix matches.
+    /// Pairs with `slot_id` so the cache lives in a stable slot.
+    #[serde(default = "default_cache_prompt")]
+    pub cache_prompt: bool,
+    /// Pin to a single slot so KV cache hits are deterministic.
+    #[serde(default)]
+    pub slot_id: i32,
+}
+
+fn default_cache_prompt() -> bool {
+    true
 }
 
 impl CompletionRequest {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
-            n_predict: 1024,
+            // Realistic prompt-master outputs are 80–200 tokens; cap at
+            // 256 to leave headroom for multi-step rewrites without
+            // inviting runaway generation on edge cases.
+            n_predict: 256,
             temperature: 0.7,
             top_p: 0.95,
-            stop: vec!["</s>".to_string()],
+            // </s> is Qwen's true EOS; <|im_end|> is what it actually
+            // emits at the end of an assistant turn in ChatML framing;
+            // <|endoftext|> is the raw base-model stop. Cover all three
+            // so we never get tail garbage after a clean answer.
+            stop: vec![
+                "</s>".to_string(),
+                "<|im_end|>".to_string(),
+                "<|endoftext|>".to_string(),
+            ],
             stream: true,
+            cache_prompt: true,
+            slot_id: 0,
         }
     }
 }
@@ -73,7 +107,7 @@ pub async fn complete_blocking(
     request: &CompletionRequest,
 ) -> Result<String, InferenceError> {
     let url = format!("{base_url}/completion");
-    let client = reqwest::Client::new();
+    let client = shared_client();
     let mut req = request.clone();
     req.stream = false;
     let resp = client.post(&url).json(&req).send().await?;
@@ -98,7 +132,7 @@ where
     }
 
     let url = format!("{base_url}/completion");
-    let client = reqwest::Client::new();
+    let client = shared_client();
     let mut req = request.clone();
     req.stream = true;
 

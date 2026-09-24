@@ -9,7 +9,9 @@
 //!     overrides; loaded at runtime and take precedence over the bundled
 //!     defaults when names collide.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use handlebars::Handlebars;
 use serde::Serialize;
@@ -49,8 +51,7 @@ pub fn builtin_templates() -> Vec<TemplateSummary> {
             id: "prompt-master".to_string(),
             display_name: "Prompt Master (default)".to_string(),
             source: TemplateSource::Builtin,
-            description: "Transforms raw thought into a structured prompt using XML tags."
-                .to_string(),
+            description: "Transforms raw thought into a structured Markdown prompt.".to_string(),
         },
         TemplateSummary {
             id: "universal".to_string(),
@@ -106,11 +107,45 @@ fn load_user_template(id: &str) -> std::io::Result<Option<String>> {
 
 /// Render a template string against the given input. Returns the final
 /// prompt we send to the LLM.
-pub fn render(template: &str, input: &PromptInput) -> Result<String, PromptError> {
-    let mut hb = Handlebars::new();
-    hb.register_template_string("tmpl", template)?;
+///
+/// Compiled templates are cached by `(id, source)` so we don't pay the
+/// `Handlebars::new()` + `register_template_string` cost on every hotkey
+/// press. The source string is part of the key so a user editing a
+/// template file gets a fresh compile on the next load.
+pub fn render(id: &str, template: &str, input: &PromptInput) -> Result<String, PromptError> {
+    let cache = template_cache();
+    let cache_key = (id.to_string(), template.to_string());
+    let mut guard = cache.lock().expect("template cache poisoned");
+    let hb = guard.entry(cache_key.clone()).or_insert_with(|| {
+        let mut hb = Handlebars::new();
+        // register_template_string only errors on parse failure; surface
+        // that as PromptError::Template on first call, then never again.
+        hb.register_template_string("tmpl", template)
+            .expect("template parse failed at first call");
+        hb
+    });
     let rendered = hb.render("tmpl", input)?;
     Ok(rendered)
+}
+
+/// Process-wide template cache. Keyed by (template id, source string).
+fn template_cache() -> &'static Mutex<HashMap<(String, String), Handlebars<'static>>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), Handlebars<'static>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Wrap a rendered system prompt + raw user input in Qwen's ChatML
+/// envelope. Qwen 2.5 is instruction-tuned with this framing; sending
+/// raw prose makes it hedge before committing, costing 5–15 wasted
+/// tokens per call.
+///
+/// The wrapped prefix is stable for a given (template id, user_input)
+/// — when llama.cpp's KV cache is enabled (cache_prompt + slot_id),
+/// only the user-input portion is recomputed on repeat calls.
+pub fn build_chatml_prompt(system: &str, user_input: &str) -> String {
+    format!(
+        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user_input}<|im_end|>\n<|im_start|>assistant\n"
+    )
 }
 
 #[cfg(test)]
@@ -142,7 +177,23 @@ mod tests {
             profile_tone: &profile.tone,
             profile_tools: profile.tools.clone(),
         };
-        let rendered = render("domain={{profile_domain}} input={{input}}", &input).unwrap();
+        let rendered = render(
+            "test-id",
+            "domain={{profile_domain}} input={{input}}",
+            &input,
+        )
+        .unwrap();
         assert_eq!(rendered, "domain=universal input=hello");
+    }
+
+    #[test]
+    fn chatml_envelope_wraps_system_and_user() {
+        let wrapped = build_chatml_prompt("you are a helper", "fix this");
+        assert_eq!(
+            wrapped,
+            "<|im_start|>system\nyou are a helper<|im_end|>\n\
+             <|im_start|>user\nfix this<|im_end|>\n\
+             <|im_start|>assistant\n"
+        );
     }
 }

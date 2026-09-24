@@ -39,6 +39,61 @@ pub enum SelectedTextError {
     Ax(String),
 }
 
+/// Captured at the start of a streaming replace. Holds onto the focused
+/// AX element and the original selection range so subsequent per-chunk
+/// writes always target the user's original selection, even if the
+/// caret moves mid-stream.
+///
+/// `kAXSelectedTextAttribute` writes replace the contents of the
+/// currently-selected range. If the caret has moved, the next write
+/// would land in a new place. We therefore capture the focused element
+/// once and re-apply the original selection range before each write
+/// using `kAXSelectedTextRangeAttribute` (Strategy 2's caret-restore
+/// trick, reused for streaming).
+///
+/// The anchor owns its `NSAutoreleasePool` so `CFString` instances
+/// allocated inside the chunk loop stay alive for the duration of
+/// the streaming replace. The pool is drained in `Drop`.
+pub struct ReplaceAnchor {
+    system: *mut AnyObject,
+    focused: *mut AnyObject,
+    range: AxRange,
+    pool: *mut AnyObject,
+}
+
+impl ReplaceAnchor {
+    /// Re-select the original range so the next `AXSelectedText` write
+    /// lands inside the user's original selection.
+    fn reselect(&self) -> bool {
+        set_attr_range(
+            self.focused,
+            "AXSelectedTextRange",
+            self.range.location as usize,
+            self.range.length as usize,
+            self.pool,
+        )
+    }
+
+    /// Write `text` into the anchored selection. Re-selects the range
+    /// first so even if the caret drifted, we land in the right place.
+    fn write(&self, text: &str) -> bool {
+        // Re-select the range before each write. A reselect failure is
+        // not fatal — the next write will still *try* to land in the
+        // current selection, which is at worst a minor misplacement
+        // if the user clicked elsewhere.
+        if !self.reselect() {
+            tracing::warn!("ax: streaming anchor reselect failed");
+        }
+        try_set_selected_text(self.focused, text, self.pool).unwrap_or(false)
+    }
+}
+
+impl Drop for ReplaceAnchor {
+    fn drop(&mut self) {
+        drain_pool(self.pool);
+    }
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXUIElementCreateSystemWide() -> *mut AnyObject;
@@ -75,6 +130,45 @@ pub fn read_selected_text() -> Result<String, SelectedTextError> {
         return Err(SelectedTextError::NotReadable);
     }
     Ok(text)
+}
+
+/// Capture the focused element + its current selection range so subsequent
+/// per-chunk writes stay anchored to the user's original selection even
+/// if the caret moves during streaming.
+///
+/// The returned anchor owns its own autorelease pool; drop it (or call
+/// `replace_anchored` until done) to release the AX refs and any
+/// allocated CFStrings.
+pub fn capture_replace_anchor() -> Result<ReplaceAnchor, SelectedTextError> {
+    let pool = alloc_pool();
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() {
+        drain_pool(pool);
+        return Err(SelectedTextError::NoFocus);
+    }
+    let focused = copy_attr(system, attr_name("AXFocusedUIElement"))?;
+    let range = read_attr_range(focused, "AXSelectedTextRange").map_err(|err| {
+        tracing::warn!("ax: capture_replace_anchor: no range: {err}");
+        err
+    })?;
+    Ok(ReplaceAnchor {
+        system,
+        focused,
+        range,
+        pool,
+    })
+}
+
+/// Write `text` into the anchored selection. Designed to be called many
+/// times in a streaming loop; each call re-selects the original range
+/// before writing so partial output lands in the right place even if
+/// the user clicks elsewhere mid-stream.
+///
+/// Returns `true` on success, `false` if the write failed. Callers
+/// should not panic on `false` — partial replacement is acceptable
+/// during streaming; the final write at end-of-stream is what matters.
+pub fn replace_anchored(anchor: &ReplaceAnchor, text: &str) -> bool {
+    anchor.write(text)
 }
 
 /// Replace the currently selected text with `new_text`. The focused element
