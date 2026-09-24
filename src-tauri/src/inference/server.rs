@@ -137,9 +137,7 @@ impl RunningServer {
                     // treat status: "ok" as ready so the caller doesn't
                     // return before the model is loaded into memory.
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if json.get("status").and_then(|v| v.as_str())
-                            == Some("ok")
-                        {
+                        if json.get("status").and_then(|v| v.as_str()) == Some("ok") {
                             return Ok(());
                         }
                     }
