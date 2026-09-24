@@ -170,12 +170,9 @@ pub mod commands {
         let Some(url) = base_url else {
             return Ok(None);
         };
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client
+        let resp = crate::inference::client::shared_client()
             .get(format!("{url}/health"))
+            .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
             .map_err(|e| e.to_string())?;

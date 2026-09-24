@@ -203,12 +203,30 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     inference_state: SharedInferenceState,
     active: SharedActiveRewrite,
 ) -> Result<(), String> {
-    let raw = clipboard::read_selected_text().map_err(|e| format!("read selection failed: {e}"))?;
-    if raw.trim().is_empty() {
-        return Err("no text selected".to_string());
-    }
-
-    let profile = context::detect();
+    // AX reads and osascript forks are both synchronous and block the
+    // executor thread for tens to hundreds of milliseconds. Run them on
+    // the blocking pool so cancellation/interrupt can interleave.
+    let active_for_pre = active.clone();
+    let pre = tokio::task::spawn_blocking(
+        move || -> Result<(String, context::ContextProfile), String> {
+            if active_for_pre.cancel.is_cancelled() {
+                return Err("cancelled".to_string());
+            }
+            let raw = clipboard::read_selected_text()
+                .map_err(|e| format!("read selection failed: {e}"))?;
+            if raw.trim().is_empty() {
+                return Err("no text selected".to_string());
+            }
+            if active_for_pre.cancel.is_cancelled() {
+                return Err("cancelled".to_string());
+            }
+            let profile = context::detect();
+            Ok((raw, profile))
+        },
+    )
+    .await
+    .map_err(|e| format!("preflight join: {e}"))?;
+    let (raw, profile) = pre?;
     let (template_id, template_str) =
         prompt::load_template("prompt-master").map_err(|e| e.to_string())?;
     let input = PromptInput {
@@ -218,7 +236,14 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
         profile_tone: &profile.tone,
         profile_tools: profile.tools.clone(),
     };
-    let rendered = prompt::render(&template_str, &input).map_err(|e| e.to_string())?;
+    // ChatML framing: rendered template is the system turn; raw selected
+    // text is the user turn. The trimmed prompt-master no longer
+    // references {{input}} (the user message carries it). Universal and
+    // concise still use {{input}} if a user re-introduces it, but
+    // prompt-master is the only template wired here today.
+    let system_prompt =
+        prompt::render(&template_id, &template_str, &input).map_err(|e| e.to_string())?;
+    let rendered = prompt::build_chatml_prompt(&system_prompt, &raw);
 
     let url_string: String = {
         let guard = inference_state.inner.lock().await;
@@ -229,29 +254,94 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     };
 
     let rewritten = if url_string.is_empty() {
-        rewrite_placeholder(&rendered, &raw).await
+        // No model loaded — fall through to the placeholder rewrite and
+        // write it via the one-shot replace path.
+        let placeholder = rewrite_placeholder(&rendered, &raw).await;
+        clipboard::replace_selected_text(&placeholder)
+            .map_err(|e| format!("replace selection failed: {e}"))?;
+        placeholder
     } else {
         let url = url_string;
-        let mut accumulated = String::new();
+        // Streaming paste: write each chunk into the selection as it
+        // arrives instead of buffering the full response. This collapses
+        // perceived latency from "wait-for-end" to "time-to-first-token".
+        //
+        // Architecture:
+        //   * The streaming callback (Send, runs on whatever thread polls
+        //     the future) sends chunks through a `mpsc::channel`.
+        //   * A `spawn_blocking` task owns the `ReplaceAnchor` (which
+        //     holds raw AX pointers and is therefore !Send) and writes
+        //     accumulated text into the selection on each tick.
+        //   * Throttling (~8 Hz) lives on the receiving side so we never
+        //     hit AX faster than the visible refresh rate.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let cancel = active.cancel.clone();
         let request = CompletionRequest::new(rendered);
         let app_for_stream = app.clone();
-        crate::inference::client::complete_streaming(
+
+        let writer = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut anchor = clipboard::capture_replace_anchor()
+                .map_err(|e| format!("capture anchor failed: {e}"))?;
+            let mut accumulated = String::new();
+            let mut last_replace = std::time::Instant::now();
+            let min_replace_interval = std::time::Duration::from_millis(120);
+            let mut first_replace_done = false;
+            while let Some(content) = rx.blocking_recv() {
+                accumulated.push_str(&content);
+                // Defensive: if a partial <|im_end|> slips through as
+                // streamed tokens (llama-server's stop matching only
+                // fires on JSON `stop:true`), truncate here so we never
+                // paste the chat-template tail.
+                if let Some(idx) = accumulated.find("<|im_end|>") {
+                    accumulated.truncate(idx);
+                }
+                if accumulated.len() > 4096 {
+                    // Hard safety cap: a runaway loop that ignores
+                    // n_predict shouldn't be able to paste megabytes
+                    // into the user's text field.
+                    tracing::warn!("ax: streaming accumulated > 4096 chars, truncating");
+                    accumulated.truncate(4096);
+                }
+                if !first_replace_done || last_replace.elapsed() >= min_replace_interval {
+                    let is_first = !first_replace_done;
+                    // Pass the full cumulative buffer; the anchor
+                    // internally tracks what it's already committed
+                    // and routes by strategy (AXSelectedText trim vs
+                    // AXValue full rebuild).
+                    let _ = clipboard::replace_anchored(&mut anchor, &accumulated, is_first);
+                    first_replace_done = true;
+                    last_replace = std::time::Instant::now();
+                }
+            }
+            // Final flush after stream end.
+            let _ = clipboard::replace_anchored(&mut anchor, &accumulated, !first_replace_done);
+            Ok(())
+        });
+
+        // Closure captures a clone of `tx` so we can also `drop(tx)`
+        // ourselves after the stream finishes (to wake the writer on
+        // the cancellation path where no stop chunk arrives).
+        let tx_for_cb = tx.clone();
+        let stream_result = crate::inference::client::complete_streaming(
             &app_for_stream,
             &url,
             &request,
             cancel,
-            |chunk| {
-                accumulated.push_str(&chunk.content);
+            move |chunk| {
+                let _ = tx_for_cb.send(chunk.content);
             },
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await;
+
+        // Drop the sender side of the channel so the writer task knows
+        // to exit even if no stop chunk arrived (e.g. on cancellation).
+        drop(tx);
+
+        let accumulated = stream_result.map_err(|e| e.to_string())?;
+        // Wait for the writer to finish its final flush.
+        writer.await.map_err(|e| format!("writer join: {e}"))??;
         accumulated
     };
-
-    clipboard::replace_selected_text(&rewritten)
-        .map_err(|e| format!("replace selection failed: {e}"))?;
 
     let model_id = {
         let guard = model_state.downloaded.lock().await;

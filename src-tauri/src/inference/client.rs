@@ -5,7 +5,7 @@
 //! call into `complete_streaming`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,16 @@ use super::InferenceError;
 
 const STREAM_EVENT: &str = "inference://stream";
 
+/// Shared reqwest client. Building one per call (the old behaviour) means
+/// every hotkey press rebuilds the TLS stack and connection pool; the
+/// reqwest 0.12 default builder does keep-alive but we still save the
+/// per-call config evaluation, and it gives us a single place to tweak
+/// defaults later.
+pub(crate) fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct CompletionRequest {
@@ -22,19 +32,71 @@ pub struct CompletionRequest {
     pub n_predict: u32,
     pub temperature: f32,
     pub top_p: f32,
+    /// Top-K sampling. 0 disables it; llama-server default is 40. We set
+    /// it explicitly so a degenerate repetition loop (where the same
+    /// high-prob token keeps winning the top-p cut) gets clipped by the
+    /// top-k cut.
+    #[serde(default)]
+    pub top_k: u32,
+    /// Repetition penalty. llama-server default is 1.0 (no penalty).
+    /// 1.1 nudges the model away from repeating recent tokens, which is
+    /// the single biggest fix for the looped-output problem we saw on
+    /// CPU inference with the 1.5B Qwen model.
+    #[serde(default = "default_repeat_penalty")]
+    pub repeat_penalty: f32,
     pub stop: Vec<String>,
     pub stream: bool,
+    /// Reuse llama.cpp's KV cache across calls when the prefix matches.
+    /// Pairs with `slot_id` so the cache lives in a stable slot.
+    #[serde(default = "default_cache_prompt")]
+    pub cache_prompt: bool,
+    /// Pin to a single slot so KV cache hits are deterministic. Set
+    /// to -1 to let llama-server allocate (safer when state can leak
+    /// across requests).
+    #[serde(default = "default_slot_id")]
+    pub slot_id: i32,
+}
+
+fn default_cache_prompt() -> bool {
+    true
+}
+
+fn default_repeat_penalty() -> f32 {
+    1.1
+}
+
+fn default_slot_id() -> i32 {
+    -1
 }
 
 impl CompletionRequest {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
-            n_predict: 1024,
+            // Realistic prompt-master outputs are 80–200 tokens; cap at
+            // 256 to leave headroom for multi-step rewrites without
+            // inviting runaway generation on edge cases.
+            n_predict: 256,
             temperature: 0.7,
             top_p: 0.95,
-            stop: vec!["</s>".to_string()],
+            top_k: 40,
+            repeat_penalty: 1.1,
+            // </s> is Qwen's true EOS; <|im_end|> is what it actually
+            // emits at the end of an assistant turn in ChatML framing;
+            // <|endoftext|> is the raw base-model stop. Cover all three
+            // so we never get tail garbage after a clean answer.
+            stop: vec![
+                "</s>".to_string(),
+                "<|im_end|>".to_string(),
+                "<|endoftext|>".to_string(),
+            ],
             stream: true,
+            cache_prompt: true,
+            // Don't pin a slot — slot 0 in particular risks retaining
+            // stale generation state between requests, which combined
+            // with cache_prompt can cause the model to loop on previous
+            // output. Let llama-server pick.
+            slot_id: -1,
         }
     }
 }
@@ -73,7 +135,7 @@ pub async fn complete_blocking(
     request: &CompletionRequest,
 ) -> Result<String, InferenceError> {
     let url = format!("{base_url}/completion");
-    let client = reqwest::Client::new();
+    let client = shared_client();
     let mut req = request.clone();
     req.stream = false;
     let resp = client.post(&url).json(&req).send().await?;
@@ -98,7 +160,7 @@ where
     }
 
     let url = format!("{base_url}/completion");
-    let client = reqwest::Client::new();
+    let client = shared_client();
     let mut req = request.clone();
     req.stream = true;
 
