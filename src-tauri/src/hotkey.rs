@@ -227,8 +227,18 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
     .await
     .map_err(|e| format!("preflight join: {e}"))?;
     let (raw, profile) = pre?;
+    // Active template: `universal` rewrites the user's text directly
+    // (tight prose). `prompt-master` instead asks the model to emit a
+    // structured prompt for *another* LLM to execute. The latter is
+    // clever but small models (1.5B / 3B Qwen) frequently degenerate
+    // into a repetition loop on short concrete inputs like "draft an
+    // email to your boss" — the model restates the same `# Goal` /
+    // `## Context` headers repeatedly while expanding the body. Plain
+    // rewriting matches user intent on the common case; users who want
+    // the structured-prompt flavor can pick `prompt-master` from
+    // Settings → Templates.
     let (template_id, template_str) =
-        prompt::load_template("prompt-master").map_err(|e| e.to_string())?;
+        prompt::load_template("universal").map_err(|e| e.to_string())?;
     let input = PromptInput {
         input: &raw,
         context: &profile,
