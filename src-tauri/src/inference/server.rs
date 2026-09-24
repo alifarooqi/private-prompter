@@ -73,7 +73,12 @@ impl RunningServer {
             model_id: model_id.to_string(),
         };
 
-        server.wait_healthy().await?;
+        // Give llama-server a beat to bind to its port. If it dies
+        // immediately the subsequent /health poll will surface the error;
+        // we don't block here so the caller can stream a 'Loading
+        // model…' UI while the model actually loads into memory (which
+        // can take a few seconds for the larger GGUFs).
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         Ok(server)
     }
 
@@ -128,7 +133,14 @@ impl RunningServer {
             }
             if let Ok(resp) = client.get(&url).send().await {
                 if resp.status().is_success() {
-                    return Ok(());
+                    // /health returns 200 OK during loading too; we only
+                    // treat status: "ok" as ready so the caller doesn't
+                    // return before the model is loaded into memory.
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if json.get("status").and_then(|v| v.as_str()) == Some("ok") {
+                            return Ok(());
+                        }
+                    }
                 }
             }
             tokio::time::sleep(HEALTH_POLL).await;

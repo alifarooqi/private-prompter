@@ -53,8 +53,29 @@ export function Settings({ onRevoked }: Props) {
   const [permissionDetail, setPermissionDetail] = useState<string | null>(null);
   const [hasPrompted, setHasPrompted] = useState(false);
 
+  // Inference + model selection state, lifted here so both the General tab
+  // (where the user starts/stops the server and picks the active model)
+  // and the Model tab (where downloads happen) can read+write it.
+  const [models, setModels] = useState<ModelSummary[] | null>(null);
+  const [recommendedId, setRecommendedId] = useState<string | null>(null);
+  const [server, setServer] = useState<ServerStatus | null>(null);
+  const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
+    "idle",
+  );
+  const [serverLoading, setServerLoading] = useState(false);
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [progressById, setProgressById] = useState<
+    Record<string, DownloadProgress>
+  >({});
+  const [pausedById, setPausedById] = useState<Record<string, boolean>>({});
+  const [downloadErrorById, setDownloadErrorById] = useState<
+    Record<string, string | null>
+  >({});
+
   useEffect(() => {
     refresh();
+    void loadModels();
   }, []);
 
   async function refresh() {
@@ -64,6 +85,120 @@ export function Settings({ onRevoked }: Props) {
     setPermissionDetail(status.detail);
     if (!status.granted) onRevoked();
   }
+
+  async function loadModels() {
+    try {
+      const [list, recommended, initialStatus, health, active] = await Promise.all([
+        listModels(),
+        recommendedModelId(),
+        inferenceStatus(),
+        inferenceHealth(),
+        getActiveModel(),
+      ]);
+      setModels(list);
+      setRecommendedId(recommended);
+      setServer({ ...initialStatus, loading: health?.status === "loading" });
+      setActiveModelId(active.id);
+
+      // If the server is up but still loading the model (auto-start
+      // races against the model load), keep the amber dot pulsing
+      // until /health reports ok — otherwise the UI shows the wrong
+      // state for the rest of the session.
+      if (initialStatus.running && health?.status === "loading") {
+        setServerLoading(true);
+        try {
+          await waitForServerReady();
+          const status = await inferenceStatus();
+          setServer(status);
+        } finally {
+          setServerLoading(false);
+        }
+      }
+    } catch (err) {
+      console.error("model load failed", err);
+    }
+  }
+
+  async function onStartServer() {
+    setServerBusy("starting");
+    setServerLoading(true);
+    try {
+      await startInference();
+      // start_inference spawns llama-server and returns immediately.
+      // Poll /health until status is "ok" so the UI flips from
+      // "Loading model…" to "Running on …" at the right moment.
+      await waitForServerReady();
+      const status = await inferenceStatus();
+      setServer(status);
+    } catch (err) {
+      console.error("start inference failed", err);
+    } finally {
+      setServerBusy("idle");
+      setServerLoading(false);
+    }
+  }
+
+  async function onStopServer() {
+    setServerBusy("stopping");
+    try {
+      await stopInference();
+      const status = await inferenceStatus();
+      setServer(status);
+    } catch (err) {
+      console.error("stop inference failed", err);
+    } finally {
+      setServerBusy("idle");
+      setServerLoading(false);
+    }
+  }
+
+  async function onSelectModel(modelId: string) {
+    try {
+      await setActiveModel(modelId);
+      setActiveModelId(modelId);
+      // If the server is running, restart it on the new model.
+      if (server?.running) {
+        await stopInference();
+        setServerBusy("starting");
+        setServerLoading(true);
+        try {
+          await startInference();
+          await waitForServerReady();
+          const status = await inferenceStatus();
+          setServer(status);
+        } finally {
+          setServerBusy("idle");
+          setServerLoading(false);
+        }
+      }
+    } catch (err) {
+      console.error("select active model failed", err);
+    }
+  }
+
+  /**
+   * Poll `inferenceHealth` until llama-server reports status: "ok".
+   * Yields earlier if the server stops responding (returns null) so we
+   * don't hang the UI forever. Caller is responsible for clearing the
+   * "Loading…" indicator.
+   */
+  async function waitForServerReady(timeoutMs = 60_000): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const health = await inferenceHealth();
+        if (health === null) return; // server gone
+        if (health.status === "ok") return;
+      } catch {
+        // /health not reachable yet — keep polling.
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    // Timed out. Surface as a console warning so the dev knows.
+    console.warn("inference: server did not become healthy within 60s");
+  }
+
+  const downloadedModels = (models ?? []).filter((m) => m.downloaded);
 
   return (
     <div className="flex h-full bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
@@ -92,9 +227,32 @@ export function Settings({ onRevoked }: Props) {
             permissionDetail={permissionDetail}
             onRecheck={refresh}
             onOpenSettings={openAccessibilitySettings}
+            downloadedModels={downloadedModels}
+            server={server}
+            serverBusy={serverBusy}
+            serverLoading={serverLoading}
+            activeModelId={activeModelId}
+            onStartServer={onStartServer}
+            onStopServer={onStopServer}
+            onSelectModel={onSelectModel}
           />
         )}
-        {tab === "model" && <ModelTab />}
+        {tab === "model" && (
+          <ModelTab
+            models={models}
+            recommendedId={recommendedId}
+            activeModelId={activeModelId}
+            progressById={progressById}
+            pausedById={pausedById}
+            downloadErrorById={downloadErrorById}
+            busyId={busyId}
+            setBusyId={setBusyId}
+            setPausedById={setPausedById}
+            setProgressById={setProgressById}
+            setDownloadErrorById={setDownloadErrorById}
+            setModels={setModels}
+          />
+        )}
         {tab === "templates" && <TemplatesTab />}
         {tab === "privacy" && <PrivacyTab />}
         {tab === "about" && <AboutTab />}
@@ -134,14 +292,41 @@ function GeneralTab({
   permissionDetail,
   onRecheck,
   onOpenSettings,
+  downloadedModels,
+  server,
+  serverBusy,
+  serverLoading,
+  activeModelId,
+  onStartServer,
+  onStopServer,
+  onSelectModel,
 }: {
   permissionGranted: boolean | null;
   permissionDetail: string | null;
   onRecheck: () => Promise<void>;
   onOpenSettings: () => Promise<void>;
+  downloadedModels: ModelSummary[];
+  server: ServerStatus | null;
+  serverBusy: "idle" | "starting" | "stopping";
+  serverLoading: boolean;
+  activeModelId: string | null;
+  onStartServer: () => Promise<void>;
+  onStopServer: () => Promise<void>;
+  onSelectModel: (id: string) => Promise<void>;
 }) {
   return (
     <div className="space-y-6">
+      <InferenceSection
+        downloadedModels={downloadedModels}
+        server={server}
+        serverBusy={serverBusy}
+        serverLoading={serverLoading}
+        activeModelId={activeModelId}
+        onStartServer={onStartServer}
+        onStopServer={onStopServer}
+        onSelectModel={onSelectModel}
+      />
+
       <section>
         <h2 className="mb-3 text-base font-medium">Permissions</h2>
         <PermissionRow
@@ -163,6 +348,132 @@ function GeneralTab({
         </label>
       </section>
     </div>
+  );
+}
+
+/**
+ * Inference server controls. The first thing a user sees on opening the
+ * General tab — a status row + a model dropdown + a single play/stop
+ * icon button. The button shape (▶ / ■) keeps the visual weight low so
+ * the row reads as a status indicator with an action, not as a form.
+ */
+function InferenceSection({
+  downloadedModels,
+  server,
+  serverBusy,
+  serverLoading,
+  activeModelId,
+  onStartServer,
+  onStopServer,
+  onSelectModel,
+}: {
+  downloadedModels: ModelSummary[];
+  server: ServerStatus | null;
+  serverBusy: "idle" | "starting" | "stopping";
+  serverLoading: boolean;
+  activeModelId: string | null;
+  onStartServer: () => Promise<void>;
+  onStopServer: () => Promise<void>;
+  onSelectModel: (id: string) => Promise<void>;
+}) {
+  const running = server?.running ?? false;
+  const starting = serverBusy === "starting";
+  const stopping = serverBusy === "stopping";
+  const loading = serverLoading;
+  const busy = starting || stopping || loading;
+  const hasModel = downloadedModels.length > 0;
+
+  const statusLine = (() => {
+    if (running && server) {
+      // Same character count for both states so the row doesn't wobble
+      // between one and two lines as the server flips loading → ready.
+      // The model identity is shown in the dropdown; the status line just
+      // names the server's host:port and the action ("Loading" /
+      // "Running"). The pulsing amber dot below carries the loading cue.
+      return loading
+        ? `Loading on ${server.host}:${server.port}`
+        : `Running on ${server.host}:${server.port}`;
+    }
+    return hasModel ? "Stopped" : "Download a model to start the inference server";
+  })();
+
+  const buttonLabel = running ? "Stop inference server" : "Start inference server";
+
+  return (
+    <section>
+      <h2 className="mb-3 text-base font-medium">Inference server</h2>
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <span
+              aria-hidden
+              className={`inline-block h-2.5 w-2.5 rounded-full ${
+                running
+                  ? server?.loading
+                    ? "animate-pulse bg-amber-400"
+                    : "bg-emerald-500"
+                  : "bg-neutral-300 dark:bg-neutral-700"
+              }`}
+            />
+            <span>{statusLine}</span>
+          </div>
+          <div className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+            {hasModel
+              ? "Pick a downloaded model. Switching restarts the server."
+              : "Download a model from the Model tab to enable inference."}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <select
+            value={activeModelId ?? ""}
+            onChange={(e) => onSelectModel(e.target.value)}
+            disabled={!hasModel || busy}
+            className="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            {hasModel ? (
+              downloadedModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.display_name}
+                </option>
+              ))
+            ) : (
+              <option value="">No model downloaded</option>
+            )}
+          </select>
+          <button
+            onClick={running ? onStopServer : onStartServer}
+            disabled={busy || (!running && !hasModel)}
+            aria-label={buttonLabel}
+            title={buttonLabel}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-neutral-300 bg-neutral-900 text-white hover:bg-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+          >
+            {starting ? (
+              <span className="text-xs">…</span>
+            ) : stopping ? (
+              <span className="text-xs">…</span>
+            ) : running ? (
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden
+                className="h-4 w-4"
+              >
+                <rect x="6" y="6" width="12" height="12" rx="1.5" />
+              </svg>
+            ) : (
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden
+                className="h-4 w-4"
+              >
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -412,81 +723,57 @@ function PermissionRow({
   );
 }
 
-function ModelTab() {
-  const [models, setModels] = useState<ModelSummary[] | null>(null);
-  const [recommendedId, setRecommendedId] = useState<string | null>(null);
-  const [progressById, setProgressById] = useState<
-    Record<string, DownloadProgress>
-  >({});
-  const [pausedById, setPausedById] = useState<Record<string, boolean>>({});
-  const [downloadErrorById, setDownloadErrorById] = useState<
-    Record<string, string | null>
-  >({});
-  const [server, setServer] = useState<ServerStatus | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [serverBusy, setServerBusy] = useState<"idle" | "starting" | "stopping">(
-    "idle",
-  );
-  const [activeModelId, setActiveModelId] = useState<string | null>(null);
-
+function ModelTab({
+  models,
+  recommendedId,
+  activeModelId,
+  progressById,
+  pausedById,
+  downloadErrorById,
+  busyId,
+  setBusyId,
+  setPausedById,
+  setProgressById,
+  setDownloadErrorById,
+  setModels,
+}: {
+  models: ModelSummary[] | null;
+  recommendedId: string | null;
+  activeModelId: string | null;
+  progressById: Record<string, DownloadProgress>;
+  pausedById: Record<string, boolean>;
+  downloadErrorById: Record<string, string | null>;
+  busyId: string | null;
+  setBusyId: (id: string | null) => void;
+  setPausedById: React.Dispatch<
+    React.SetStateAction<Record<string, boolean>>
+  >;
+  setProgressById: React.Dispatch<
+    React.SetStateAction<Record<string, DownloadProgress>>
+  >;
+  setDownloadErrorById: React.Dispatch<
+    React.SetStateAction<Record<string, string | null>>
+  >;
+  setModels: (models: ModelSummary[]) => void;
+}) {
   useEffect(() => {
+    // Subscribe to download progress events to update per-model cards.
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-
-    async function load() {
-      try {
-        const [list, recommended, initialStatus, health, active] = await Promise.all([
-          listModels(),
-          recommendedModelId(),
-          inferenceStatus(),
-          inferenceHealth(),
-          getActiveModel(),
-        ]);
-        if (!cancelled) {
-          setModels(list);
-          setRecommendedId(recommended);
-          setServer({ ...initialStatus, loading: health?.status === "loading" });
-          setActiveModelId(active.id);
-        }
-        unlisten = await onDownloadProgress((p) => {
-          setProgressById((prev) => ({ ...prev, [p.modelId]: p }));
-          if (p.state === "completed" || p.state === "failed") {
-            listModels().then(setModels).catch(() => {});
-          }
-        });
-      } catch (err) {
-        console.error("model load failed", err);
-      }
-    }
-
-    void load();
-
-    // Poll /health while a server is up so the UI stays in sync with
-    // crashes and "model loading" → "ready" transitions.
-    const poll = window.setInterval(async () => {
+    onDownloadProgress((p) => {
       if (cancelled) return;
-      try {
-        const [status, health] = await Promise.all([
-          inferenceStatus(),
-          inferenceHealth(),
-        ]);
-        if (!cancelled) {
-          setServer({
-            ...status,
-            loading: status.running && health?.status === "loading",
-          });
-        }
-      } catch (err) {
-        console.error("inference status poll failed", err);
+      setProgressById((prev) => ({ ...prev, [p.modelId]: p }));
+      if (p.state === "completed" || p.state === "failed") {
+        listModels().then(setModels).catch(() => {});
       }
-    }, 3000);
-
+    }).then((u) => {
+      unlisten = u;
+    });
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
-      window.clearInterval(poll);
     };
-  }, []);
+  }, [setModels, setProgressById]);
 
   async function onDownload(modelId: string) {
     setBusyId(modelId);
@@ -495,9 +782,6 @@ function ModelTab() {
     try {
       await startModelDownload(modelId);
     } catch (err) {
-      // Surface the error in the card so the user knows why the download
-      // went away (HTTP 4xx, network down, URL typo, etc.) rather than
-      // silently returning to the Download button.
       const message = err instanceof Error ? err.message : String(err);
       setDownloadErrorById((prev) => ({ ...prev, [modelId]: message }));
       console.error("download failed", err);
@@ -533,46 +817,6 @@ function ModelTab() {
     }
   }
 
-  async function onStartServer() {
-    setServerBusy("starting");
-    try {
-      const status = await startInference();
-      setServer({ ...status, loading: true });
-    } catch (err) {
-      console.error("start inference failed", err);
-    } finally {
-      setServerBusy("idle");
-    }
-  }
-
-  async function onStopServer() {
-    setServerBusy("stopping");
-    try {
-      await stopInference();
-      const status = await inferenceStatus();
-      setServer({ ...status, loading: false });
-    } catch (err) {
-      console.error("stop inference failed", err);
-    } finally {
-      setServerBusy("idle");
-    }
-  }
-
-  async function onPickActive(modelId: string) {
-    try {
-      await setActiveModel(modelId);
-      setActiveModelId(modelId);
-      // If the server was running, restart it on the new model.
-      if (server?.running) {
-        await stopInference();
-        const status = await startInference();
-        setServer({ ...status, loading: true });
-      }
-    } catch (err) {
-      console.error("set active model failed", err);
-    }
-  }
-
   if (models === null) {
     return <p className="text-sm text-neutral-500">Loading model registry…</p>;
   }
@@ -580,14 +824,10 @@ function ModelTab() {
   return (
     <div className="space-y-5">
       <section>
-        <h2 className="mb-3 text-base font-medium">Model</h2>
+        <h2 className="mb-3 text-base font-medium">Models</h2>
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Highlighted text is rewritten by a small local LLM. Pick the model
-          that matches your Mac's RAM. The default recommendation is based on
-          <code className="ml-1 rounded bg-neutral-100 px-1 text-xs dark:bg-neutral-800">
-            sysctl hw.memsize
-          </code>
-          .
+          Download a model to enable the inference server. You can manage the
+          active model from the General tab.
         </p>
       </section>
 
@@ -605,23 +845,13 @@ function ModelTab() {
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  {m.downloaded && (
-                    <input
-                      type="radio"
-                      name="active-model"
-                      checked={isActive}
-                      onChange={() => onPickActive(m.id)}
-                      className="mt-0.5"
-                      title="Use this model for inference"
-                    />
-                  )}
                   <div className="text-sm font-medium">{m.display_name}</div>
                   {isRecommended && (
                     <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-200">
                       Recommended
                     </span>
                   )}
-                  {isActive && (
+                  {isActive && m.downloaded && (
                     <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">
                       Active
                     </span>
@@ -686,42 +916,6 @@ function ModelTab() {
             </div>
           );
         })}
-      </section>
-
-      <section>
-        <h2 className="mb-3 text-base font-medium">Inference server</h2>
-        <div className="flex items-center justify-between rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          <div className="text-sm">
-            <div className="font-medium">
-              {server?.running
-                ? server.loading
-                  ? `Loading model on ${server.host}:${server.port}…`
-                  : `Running on ${server.host}:${server.port}`
-                : "Not running"}
-            </div>
-            <div className="text-xs text-neutral-500 dark:text-neutral-400">
-              The server starts automatically the first time you trigger a
-              rewrite. You can also start it manually here.
-            </div>
-          </div>
-          {server?.running ? (
-            <button
-              onClick={onStopServer}
-              disabled={serverBusy !== "idle"}
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              {serverBusy === "stopping" ? "Stopping…" : "Stop server"}
-            </button>
-          ) : (
-            <button
-              onClick={onStartServer}
-              disabled={serverBusy !== "idle" || !models.some((m) => m.downloaded)}
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              {serverBusy === "starting" ? "Starting…" : "Start server"}
-            </button>
-          )}
-        </div>
       </section>
     </div>
   );
