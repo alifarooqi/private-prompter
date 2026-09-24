@@ -97,7 +97,7 @@ export function Settings({ onRevoked }: Props) {
       ]);
       setModels(list);
       setRecommendedId(recommended);
-      setServer({ ...initialStatus, loading: health?.status === "loading" });
+      setServer(initialStatus);
       setActiveModelId(active.id);
 
       // If the server is up but still loading the model (auto-start
@@ -409,7 +409,7 @@ function InferenceSection({
               aria-hidden
               className={`inline-block h-2.5 w-2.5 rounded-full ${
                 running
-                  ? server?.loading
+                  ? loading
                     ? "animate-pulse bg-amber-400"
                     : "bg-emerald-500"
                   : "bg-neutral-300 dark:bg-neutral-700"
