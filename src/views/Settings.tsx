@@ -99,6 +99,21 @@ export function Settings({ onRevoked }: Props) {
       setRecommendedId(recommended);
       setServer({ ...initialStatus, loading: health?.status === "loading" });
       setActiveModelId(active.id);
+
+      // If the server is up but still loading the model (auto-start
+      // races against the model load), keep the amber dot pulsing
+      // until /health reports ok — otherwise the UI shows the wrong
+      // state for the rest of the session.
+      if (initialStatus.running && health?.status === "loading") {
+        setServerLoading(true);
+        try {
+          await waitForServerReady();
+          const status = await inferenceStatus();
+          setServer(status);
+        } finally {
+          setServerLoading(false);
+        }
+      }
     } catch (err) {
       console.error("model load failed", err);
     }
