@@ -293,6 +293,14 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
             let mut anchor = clipboard::capture_replace_anchor()
                 .map_err(|e| format!("capture anchor failed: {e}"))?;
             let mut accumulated = String::new();
+            // `written_chars` is the count of characters we have already
+            // committed to the AX field. We track it separately from
+            // `accumulated.len()` because the throttle may skip a tick:
+            // when a tick finally fires, we need to write the slice
+            // `accumulated[written_chars..]` — only the content that
+            // arrived since the last write — not the whole buffer
+            // (which would duplicate the already-pasted prefix).
+            let mut written_chars: usize = 0;
             let mut last_replace = std::time::Instant::now();
             let min_replace_interval = std::time::Duration::from_millis(120);
             let mut first_replace_done = false;
@@ -313,14 +321,24 @@ async fn run_rewrite_inner<R: tauri::Runtime>(
                     accumulated.truncate(4096);
                 }
                 if !first_replace_done || last_replace.elapsed() >= min_replace_interval {
-                    let is_first = !first_replace_done;
-                    let _ = clipboard::replace_anchored(&mut anchor, &accumulated, is_first);
-                    first_replace_done = true;
-                    last_replace = std::time::Instant::now();
+                    // Append ONLY the slice that arrived since the last
+                    // write. Writing the full accumulated buffer would
+                    // duplicate the prefix we already pasted.
+                    let new_slice = &accumulated[written_chars..];
+                    if !new_slice.is_empty() {
+                        let is_first = !first_replace_done;
+                        let _ = clipboard::replace_anchored(&mut anchor, new_slice, is_first);
+                        written_chars = accumulated.chars().count();
+                        first_replace_done = true;
+                        last_replace = std::time::Instant::now();
+                    }
                 }
             }
             // Final flush after stream end.
-            let _ = clipboard::replace_anchored(&mut anchor, &accumulated, !first_replace_done);
+            let new_slice = &accumulated[written_chars..];
+            if !new_slice.is_empty() {
+                let _ = clipboard::replace_anchored(&mut anchor, new_slice, !first_replace_done);
+            }
             Ok(())
         });
 
